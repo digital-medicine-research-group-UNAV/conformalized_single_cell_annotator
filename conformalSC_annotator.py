@@ -14,7 +14,7 @@ import anndata as ad
 from rapidfuzz import fuzz, process
 
 from conformalSC import SingleCellClassifier
-from torchcp.classification.scores import THR
+from torchcp.classification.score import THR
 
 
 import warnings
@@ -463,7 +463,7 @@ if __name__ == "__main__":
                         cell_type_level = "celltype_level3",        # lineage_level2   celltype_level3
                         test = True,
                         alpha = [0.01, 0.05, 0.1],
-                        epoch=18,
+                        epoch=20,
                         batch_size = 525)  
     
 
@@ -483,19 +483,27 @@ if __name__ == "__main__":
 
 
     results = []
-    for pred,cp_pred, true, o_g_t in zip(annotator.adata_query.obs["predicted_labels"],annotator.adata_query.obs["prediction_sets_0.05"], y_true, ground_truth_labels_list):
+    for pred,cp_pred_001,cp_pred_005, cp_pred_010, true, o_g_t in zip(
+            annotator.adata_query.obs["predicted_labels"],
+            annotator.adata_query.obs["prediction_sets_0.01"],
+            annotator.adata_query.obs["prediction_sets_0.05"],
+            annotator.adata_query.obs["prediction_sets_0.1"],
+            y_true,
+            ground_truth_labels_list):
         
-        print(f"Predicted: {pred} - CP: {cp_pred} - True: {true}. original cell Subt: {o_g_t}")
+        print(f"Predicted: {pred} - CP 0.01: {cp_pred_001} - CP 0.05: {cp_pred_005} - CP 0.10: {cp_pred_010} - True: {true}. original cell Subt: {o_g_t}")
         
         results.append({
             "Predicted": pred,
-            "CP": cp_pred,
+            "CP 0.01": cp_pred_001,
+            "CP 0.05": cp_pred_005,
+            "CP 0.1": cp_pred_010,
             "True": true,
             "Original_Cell_Subtype": o_g_t
         })
     
     df_results = pd.DataFrame(results)
-    df_results.to_csv("results_immune.csv", index=False)  # Save to CSV if needed
+    df_results.to_csv("saves/results_immune.csv", index=False)  # Save to CSV if needed
 
 
     # now compare cell_annotations with annotator._mapped_original_ground_truth_labels

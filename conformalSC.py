@@ -27,8 +27,9 @@ from itertools import chain
 
 from torch.utils.data import TensorDataset, DataLoader
 
-from torchcp.classification.predictors import SplitPredictor, ClassWisePredictor, ClusteredPredictor
-from torchcp.classification.scores import THR
+from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
+from torchcp.classification.score import THR
+from torchcp.classification.utils.metrics import Metrics
 
 from pyod.models.iforest import IForest
 
@@ -93,7 +94,7 @@ class SingleCellClassifier:
         self.common_gene_names:list = []
         self.unique_labels:list = []
 
-        
+        self._metric = Metrics()
 
     
     def exclude_cells(self) -> None:
@@ -632,20 +633,39 @@ class SingleCellClassifier:
             self.InDis_results_ = {}
 
             for key in self.conformal_predictors:
-                result = self.conformal_predictors[key].evaluate(self.test_loader)
+                
+                prediction_sets = []
+                labels_list = []
+                with torch.no_grad():
+                    for examples in self.test_loader:
+                        tmp_x, tmp_label = examples[0].to(self.device), examples[1].to(self.device)
+                        prediction_sets_batch = self.conformal_predictors[key].predict(tmp_x)
+                        prediction_sets.extend(prediction_sets_batch)
+                        labels_list.append(tmp_label)
+                
+                val_labels = torch.cat(labels_list)
+                
+                prediction_sets_tensor = torch.stack(prediction_sets).float().to(self.device)
+
+                # Similar to .evalueate() method in the original code but refined
+                result = {"coverage_rate": self._metric('coverage_rate')(prediction_sets_tensor, val_labels),
+                            "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels),
+                            "prediction_set": prediction_sets,
+                            "targets": val_labels.tolist()}
 
                 #Calculate size distribution
-                prediction_set_sizes = [len(pred_set) for pred_set in result['Prediction_set']]
+                
+                prediction_set_sizes = [(pred_set == 1).sum().item() for pred_set in result['prediction_set']]
                 size_distribution = {size: prediction_set_sizes.count(size) for size in set(prediction_set_sizes)}
                 
-                self.InDis_results_[key] = {'Coverage_rate': result['Coverage_rate'],
-                                            'Average_size': result['Average_size'],
+                self.InDis_results_[key] = {'Coverage_rate': result['coverage_rate'],
+                                            'Average_size': result['average_size'],
                                             'Size_distribution': size_distribution}
                 
-                self.InDis_prediction_sets_[key] = [[set,target] for set,target in zip(result['Prediction_set'],result['Targets']) ]
+                self.InDis_prediction_sets_[key] = [[set,target] for set,target in zip(result['prediction_set'],result['targets']) ]
 
                 # Print results for debugging
-                print(f"\nConformal predictor {key} - Coverage Rate: {result['Coverage_rate']}, Average Size: {result['Average_size']}")
+                print(f"\nConformal predictor {key} - Coverage Rate: {result['coverage_rate']}, Average Size: {result['average_size']}")
                 print(f"Size Distribution: {size_distribution}")
         
 
@@ -689,23 +709,42 @@ class SingleCellClassifier:
             if self.conformal_prediction:
                 
                 print("\nPerforming conformal prediction...")
-
+                
+                
                 # Evaluate with conformal predictor
                 self.OOD_prediction_sets_ = {}
                 self.OOD_results_ = {}
                 for key in self.conformal_predictors:
-                    result = self.conformal_predictors[key].evaluate(self.OOD_test_loader)
 
-                    prediction_set_sizes = [len(pred_set) for pred_set in result['Prediction_set']]
+                    prediction_sets = []
+                    labels_list = []
+                    with torch.no_grad():
+                        for examples in self.OOD_test_loader:
+                            tmp_x, tmp_label = examples[0].to(self.device), examples[1].to(self.device)
+                            prediction_sets_batch = self.conformal_predictors[key].predict(tmp_x)
+                            prediction_sets.extend(prediction_sets_batch)
+                            labels_list.append(tmp_label)
+                            
+                    val_labels = torch.cat(labels_list)
+                    
+                    prediction_sets_tensor = torch.stack(prediction_sets).float().to(self.device)
+                    
+                    # Similar to .evalueate() method in the original code but refined 
+                    result = {"coverage_rate": self._metric('coverage_rate')(prediction_sets_tensor, val_labels.long()),
+                            "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels.long()),
+                            "prediction_set": prediction_sets,
+                            "targets": val_labels.tolist()}
+
+                    prediction_set_sizes = [(pred_set == 1).sum().item() for pred_set in result['prediction_set']]
                     size_distribution = {size: prediction_set_sizes.count(size) for size in set(prediction_set_sizes)}
 
-                    self.OOD_results_[key] = {'Coverage_rate': result['Coverage_rate'],
-                                             'Average_size': result['Average_size'], 
+                    self.OOD_results_[key] = {'Coverage_rate': result['coverage_rate'],
+                                             'Average_size': result['average_size'], 
                                              'Size_distribution': size_distribution}
                     
-                    self.OOD_prediction_sets_[key] = [[set,target] for set,target in zip(result['Prediction_set'],result['Targets']) ]
+                    self.OOD_prediction_sets_[key] = [[set,target] for set,target in zip(result['prediction_set'],result['targets']) ]
 
-                    print("\nConformal predictor" ,key, "\nResults per OOD sample: ",  result['Prediction_set'])
+                    print("\nConformal predictor" ,key, "\nResults per OOD sample: ",  result['prediction_set'])
                     print(f"Size Distribution: {size_distribution}")
 
             return None
@@ -762,12 +801,34 @@ class SingleCellClassifier:
         if self.conformal_prediction:
 
             for key in self.conformal_predictors:
-                CP_result = self.conformal_predictors[key].evaluate(data_cp)
+
+                prediction_sets = []
+                labels_list = []
+                with torch.no_grad():
+                    for examples in data_cp:
+                        tmp_x, tmp_label = examples[0].to(self.device), examples[1].to(self.device)
+                        prediction_sets_batch = self.conformal_predictors[key].predict(tmp_x)
+                        prediction_sets.extend(prediction_sets_batch)
+                        labels_list.append(tmp_label)
+                            
+                val_labels = torch.cat(labels_list)
+                    
+                prediction_sets_tensor = torch.stack(prediction_sets).float().to(self.device)
+                    
+                # Similar to .evalueate() method in the original code but refined 
+                CP_result = {"coverage_rate": self._metric('coverage_rate')(prediction_sets_tensor, val_labels.long()),
+                            "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels.long()),
+                            "prediction_set": prediction_sets,
+                            "targets": val_labels.tolist()}
+
+                #CP_result = self.conformal_predictors[key].evaluate(data_cp)
                 
+
                 mapped_predictions = [
-                        [self.unique_labels[idx] for idx in sublist]  # Map indices to labels for each sublist
-                        for sublist in CP_result['Prediction_set']   
-                        ] 
+                                [self.unique_labels[idx.item()] for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
+                                    for tensor in CP_result['prediction_set'] ]
+    
+                
                 
                 for i, is_ood in enumerate(data_OOD_mask):
                     if is_ood == 1:
