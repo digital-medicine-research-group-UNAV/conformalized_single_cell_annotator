@@ -28,7 +28,7 @@ from itertools import chain
 from torch.utils.data import TensorDataset, DataLoader
 
 from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
-from torchcp.classification.score import THR
+from torchcp.classification.score import THR, RAPS
 from torchcp.classification.utils.metrics import Metrics
 
 
@@ -55,9 +55,11 @@ class Annomaly_detector():
         """check whether the model is fitted."""
         return self.is_fitted_
     
-    def fit(self, X_train_woOOD, fit_ratio=0.7):
-        self.if_cad.fit(z=X_train_woOOD, fit_ratio=fit_ratio)
+    def fit(self, train_set, cal_set):
+
+        self.if_cad.fit(z_fit=train_set, z_calib = cal_set)
         self.is_fitted_ = True
+
     
     def predict(self, X_test, alpha=0.05):
 
@@ -395,18 +397,8 @@ class SingleCellClassifier:
         self.exclude_cells()
         self.num_samples = len(self.labels)
         
-        #self.labels_encoded = np.array(self.label_encoder.fit_transform(self.labels))   # too slow
+        # Encode labels
         self.unique_labels, self.labels_encoded = np.unique(self.labels, return_inverse=True)
-
-
-        print("Training OOD detector...")
-        
-        # train OOD detector
-        self.OOD_detector = Annomaly_detector(n_estimators =200 , max_features = 1)
-
-        self.OOD_detector.fit(self.obs_data, fit_ratio=0.7)
-
-        print("OOD detector trained!")
 
         
        # Split the data into train, test, val, cal
@@ -416,18 +408,34 @@ class SingleCellClassifier:
 
             data_remaining, self.data_val, labels_remaining, self.labels_val = train_test_split(
                 data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.2)
-            
+              
         else:
             data_remaining, self.data_val, labels_remaining, self.labels_val = train_test_split(
                 self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.25)
-            
+
+
 
         self.data_train, self.data_cal, self.labels_train, self.labels_cal = train_test_split(
             data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.40)
 
+
         print(f"Train data shape: {self.data_train.shape}")
         print(f"Validation data shape: {self.data_val.shape}")
         print(f"Calibration data shape: {self.data_cal.shape}")
+       
+
+
+        # train OOD detector -------------------------------------
+
+        print("Training OOD detector...")
+        
+        self.OOD_detector = Annomaly_detector(n_estimators = 500 , max_features = 1)
+
+        self.OOD_detector.fit(self.data_train, self.data_cal )
+
+        print("OOD detector trained!")
+
+
         
         if self.do_test:
             print(f"Test data shape: {self.data_test.shape}")
@@ -770,8 +778,12 @@ class SingleCellClassifier:
                                              'Size_distribution': size_distribution}
                     
                     self.OOD_prediction_sets_[key] = [[set,target] for set,target in zip(result['prediction_set'],result['targets']) ]
-
-                    print("\nConformal predictor" ,key, "\nResults per OOD sample: ",  result['prediction_set'])
+                    
+                    mapped_predictions = [
+                                [self.unique_labels[idx.item()] for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
+                                    for tensor in result['prediction_set'] ]
+                    
+                    print("\nConformal predictor" ,key, "\nResults per OOD sample: ",  mapped_predictions)
                     print(f"Size Distribution: {size_distribution}")
 
             return None
@@ -786,7 +798,7 @@ class SingleCellClassifier:
         
         #data_filtered = self.OOD_detector.predict_proba(data).copy()
         #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
-        data_OOD_mask = (self.OOD_detector.predict(data, alpha=.1)).astype(int)
+        data_OOD_mask = (self.OOD_detector.predict(data, alpha=0.03)).astype(int)
         print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
         

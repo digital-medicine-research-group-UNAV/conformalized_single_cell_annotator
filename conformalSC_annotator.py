@@ -14,7 +14,7 @@ import anndata as ad
 from rapidfuzz import fuzz, process
 
 from conformalSC import SingleCellClassifier
-from torchcp.classification.score import THR
+from torchcp.classification.score import THR, RAPS
 
 
 import warnings
@@ -198,6 +198,7 @@ class ConformalSCAnnotator:
                     model,
                     CP_predictor="mondrian",
                     cell_type_level="celltype_level3",
+                    cell_types_excluded_treshold = 50,
                     test=False,
                     alpha: Union[float, List[float]] = 0.05, 
                     epoch: int = 10,
@@ -272,7 +273,7 @@ class ConformalSCAnnotator:
         self.hidden_sizes = hidden_sizes
         self.dropout_rates = dropout_rates
         self.learning_rate = learning_rate
-        self.cell_types_excluded_treshold = 50
+        self.cell_types_excluded_treshold = cell_types_excluded_treshold 
 
         # Reference cell type to be predicted:
 
@@ -325,7 +326,7 @@ class ConformalSCAnnotator:
         classifier.fit(lr=self.learning_rate)
 
         # Calibrate classifier
-        classifier.calibrate(non_conformity_function = THR(),
+        classifier.calibrate(non_conformity_function = RAPS(),
                              alpha = self.alpha,
                              predictors = self.CP_predictor)
             
@@ -461,6 +462,7 @@ if __name__ == "__main__":
     annotator.configure(model = "HumanLung_TopMarkersFC_level3",
                         CP_predictor = "mondrian",                   # mondrian or cluster
                         cell_type_level = "celltype_level3",        # lineage_level2   celltype_level3
+                        cell_types_excluded_treshold = 50,          # Exclude cell types with less than 50 cells
                         test = True,
                         alpha = [0.01, 0.05, 0.1],
                         epoch=20,
@@ -471,7 +473,7 @@ if __name__ == "__main__":
     annotator.annotate(batch_correction="combat")  # combat, mnn, harmony
 
     # Get the predictions returning the observations of the query data object
-    print("\nPredicted annotations sets: \n" , annotator.adata_query.obs)
+    #print("\nPredicted annotations sets: \n" , annotator.adata_query.obs)
 
     
     ground_truth_labels_list = obs_query["cell_type"].tolist()

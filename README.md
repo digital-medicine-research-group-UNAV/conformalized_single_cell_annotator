@@ -11,7 +11,7 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 
 - **Conformal prediction for single-cell**: Obtain a set of likely cell types for each cell, along with user-defined confidence levels.  
 - **Out-of-distribution detection**: Identify those cells not present in the reference data
-- **Plug-and-play model usage**: Easily switch between different models (`HumanLung_TopMarkersFC_level3`, etc.) for annotation.  
+- **Plug-and-play model usage**: Easily select your reference (`HumanLung_TopMarkersFC_level3`, etc.) for annotation.  
 - **Quality control**: Optional data preprocessing ensures your input is in top shape before annotation.  
 - **Batch correction**: `combat`, `mnn`, or `harmony`-based correction to handle technical or batch effects.    
 - **Versatile outputs**: Simple access to annotation results, conformal prediction sets, and metrics.
@@ -34,9 +34,7 @@ Scanpy
 ## Quickstart
 Below is an integrated guide to getting started with the Conformalized Single Cell Annotator and understanding its outputs.
 
----
 
-### 1. Load Query Data
 
 ```python
 import numpy as np
@@ -44,10 +42,10 @@ import pandas as pd
 import scanpy as sc
 
 # Import the ConformalSCAnnotator from wherever it lives in your package
-# from conformal_sc_annotator import ConformalSCAnnotator
+from conformal_sc_annotator import ConformalSCAnnotator
 
 # 1. Load your query data
-query_data_path = 'test_data/GSE178360/GSE178360_immune.h5ad'
+query_data_path = 'path_to_query/GSE178360_immune.h5ad'
 adata_query = sc.read_h5ad(query_data_path)
 
 # 2. Extract needed arrays and metadata
@@ -68,11 +66,11 @@ annotator.quality_control()
 
 # 5. Configure model and conformal predictor
 annotator.configure(
-    model="HumanLung_TopMarkersFC_level3",   # Pre-trained or user-provided model
-    CP_predictor="mondrian",                # or "cluster"
-    cell_type_level="celltype_level3",      # lineage_level2, etc.
+    model="path_to_reference/HumanLung_TopMarkersFC_level3",    # Pre-trained or user-provided model
+    CP_predictor="mondrian",                                # or "cluster"
+    cell_type_level="celltype_level3",                      # lineage_level2, etc.
     test=True,
-    alpha=[0.01, 0.05, 0.1],                # confidence levels
+    alpha=[0.01, 0.05, 0.1],                                # confidence levels
     epoch=20,
     batch_size=525
 )
