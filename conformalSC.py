@@ -31,9 +31,41 @@ from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor,
 from torchcp.classification.score import THR
 from torchcp.classification.utils.metrics import Metrics
 
-from pyod.models.iforest import IForest
 
+from deel.puncc.api.prediction import BasePredictor
+from deel.puncc.anomaly_detection import SplitCAD
+from sklearn.ensemble import IsolationForest
 
+# We redefine the predict method to return the opposite of IF scores
+class ADPredictor(BasePredictor):
+   def predict(self, X):
+      #this is the opposite of the annomaly score
+      return -self.model.score_samples(X)
+   
+class Annomaly_detector():
+    def __init__(self, n_estimators =200 , max_features = 1):
+
+        self.ad_model = IsolationForest(n_estimators=n_estimators, max_features=max_features, n_jobs=-1)
+        self.if_predictor = ADPredictor(self.ad_model)
+        self.if_cad = SplitCAD(self.if_predictor, train=True)
+        self.is_fitted_ = False
+    
+    @property
+    def fitted(self):
+        """check whether the model is fitted."""
+        return self.is_fitted_
+    
+    def fit(self, X_train_woOOD, fit_ratio=0.7):
+        self.if_cad.fit(z=X_train_woOOD, fit_ratio=fit_ratio)
+        self.is_fitted_ = True
+    
+    def predict(self, X_test, alpha=0.05):
+
+        if not self.is_fitted_:
+            raise ValueError("Not fitted yet.  Call 'fit' with appropriate data before using 'predict'.")
+                            
+        
+        return self.if_cad.predict(X_test, alpha=alpha)
 
 
 
@@ -188,6 +220,7 @@ class SingleCellClassifier:
 
             adata_combined = _adata_ref.concatenate(adata_query, batch_categories=["ref", "query"],  batch_key="batch")
 
+            adata_combined.X = adata_combined.X.astype(np.float32) # convert to float32
 
             del adata_query, _adata_ref # free memory
 
@@ -260,15 +293,7 @@ class SingleCellClassifier:
     
 
             
-    def train_OOD_detector(self):
-        
-
-        self.OOD_detector = IForest(n_estimators=200, max_features=1, n_jobs=4)
-
-        self.OOD_detector.fit(self.obs_data)
-
-
-        return self.OOD_detector
+    
 
 
 
@@ -377,7 +402,9 @@ class SingleCellClassifier:
         print("Training OOD detector...")
         
         # train OOD detector
-        self.train_OOD_detector()
+        self.OOD_detector = Annomaly_detector(n_estimators =200 , max_features = 1)
+
+        self.OOD_detector.fit(self.obs_data, fit_ratio=0.7)
 
         print("OOD detector trained!")
 
@@ -757,8 +784,9 @@ class SingleCellClassifier:
 
         print("\nPerforming OOD detection...")
         
-        data_filtered = self.OOD_detector.predict_proba(data).copy()
-        data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
+        #data_filtered = self.OOD_detector.predict_proba(data).copy()
+        #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
+        data_OOD_mask = (self.OOD_detector.predict(data, alpha=.1)).astype(int)
         print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
         
