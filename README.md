@@ -3,17 +3,17 @@
 
 We provide a single-cell annotator based on conformal prediction for robust uncertainty quantification on annotations.
 
-Conformal prediction provides reliable and rigorous uncertainty estimates. Our Conformalized Single Cell Annotator library lets you annotate single-cell data at various significance levels, ensuring precise and informative cell-type assignments even in noisy or complex datasets.
+Conformal prediction provides reliable and rigorous uncertainty estimates [1]. Our Conformalized Single Cell Annotator library lets you annotate your single-cell data at various significance levels, ensuring precise and informative cell-type assignments even in noisy or complex datasets. This tool is designed to be fitted with your reference, and is also robust to out-of-distribution samples.
 
 ---
 
 ## Features
 
 - **Conformal prediction for single-cell**: Obtain a set of likely cell types for each cell, along with user-defined confidence levels.  
+- **Out-of-distribution detection**: Identify those cells not present in the reference data
 - **Plug-and-play model usage**: Easily switch between different models (`HumanLung_TopMarkersFC_level3`, etc.) for annotation.  
 - **Quality control**: Optional data preprocessing ensures your input is in top shape before annotation.  
-- **Batch correction**: `combat`, `mnn`, or `harmony`-based correction to handle technical or batch effects.  
-- **Ground truth recovery**: Map predicted annotations to your original (true) labels for easy comparison and downstream analysis.  
+- **Batch correction**: `combat`, `mnn`, or `harmony`-based correction to handle technical or batch effects.    
 - **Versatile outputs**: Simple access to annotation results, conformal prediction sets, and metrics.
 
 ---
@@ -23,10 +23,11 @@ Conformal prediction provides reliable and rigorous uncertainty estimates. Our C
 ## Requirements
 
 Python 3.7 +
+Scikit-learnt 1.2.2+
+Numpy <2.0.0
 Pytorch
 TorchCP
 Scanpy
-pyod
 
 
 
@@ -77,8 +78,8 @@ annotator.configure(
 )
 
 # 6. Annotate your data (with batch correction)
-annotator.annotate(batch_correction="combat")  
-# Options: "combat", "mnn", or "harmony"
+annotator.annotate(batch_correction="combat")  # Options: "combat", "mnn", or "harmony"
+
 
 # 7. View predicted annotations
 print("\nPredicted annotations sets:\n", annotator.adata_query.obs)
@@ -112,7 +113,9 @@ for pred, cp_pred_001, cp_pred_005, cp_pred_010, true, o_g_t in zip(
     })
 
 df_results = pd.DataFrame(results)
-df_results.to_csv("saves/results_immune.csv", index=False)```
+df_results.to_csv("saves/results_immune.csv", index=False)
+
+```
 
 
 ## Interpreting the Output
@@ -121,3 +124,12 @@ df_results.to_csv("saves/results_immune.csv", index=False)```
 - **`prediction_sets_alpha`**: The conformal prediction set for each significance level (\(\alpha\)). A smaller \(\alpha\) typically means a higher confidence (and potentially smaller sets).  
 - **`_mapped_original_ground_truth_labels`**: If you provided ground truth labels, these are mapped to the model’s label space for easy comparison.  
 - **`results_immune.csv`**: Example CSV file containing predicted labels, conformal prediction sets, and ground truth side-by-side.
+
+
+## References 
+
+
+[1] V. Balasubramanian, S.-S. Ho, and V. Vovk, Conformal Prediction
+for Reliable Machine Learning: Theory, Adaptations and Applications,
+1st ed. San Francisco, CA, USA: Morgan Kaufmann Publishers Inc.
+
