@@ -28,7 +28,6 @@ from itertools import chain
 from torch.utils.data import TensorDataset, DataLoader
 
 from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
-from torchcp.classification.score import THR, RAPS
 from torchcp.classification.utils.metrics import Metrics
 
 
@@ -50,6 +49,7 @@ class Annomaly_detector():
         self.if_cad = SplitCAD(self.if_predictor, train=True)
         self.is_fitted_ = False
     
+
     @property
     def fitted(self):
         """check whether the model is fitted."""
@@ -311,6 +311,7 @@ class SingleCellClassifier:
         self.cell_types_excluded:list[str] = []
 
 
+
         print("Loading reference data...")
 
         #read single cell reference data model:  
@@ -544,7 +545,7 @@ class SingleCellClassifier:
 
    
     
-    def calibrate(self, non_conformity_function = THR() , alpha = 0.05, predictors = None) -> None:  
+    def calibrate(self, non_conformity_function, alpha = 0.05, predictors = None) -> None:  
 
         print("Calibrating the model...")
 
@@ -798,7 +799,7 @@ class SingleCellClassifier:
         
         #data_filtered = self.OOD_detector.predict_proba(data).copy()
         #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
-        data_OOD_mask = (self.OOD_detector.predict(data, alpha=0.03)).astype(int)
+        data_OOD_mask = (self.OOD_detector.predict(data, alpha=0.01)).astype(int)
         print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
         
@@ -900,7 +901,7 @@ if __name__ == "__main__":
 
     alphas = [0.01, 0.05, 0.1, 0.2]
 
-    non_conformity_function = THR()
+    non_conformity_function = None
 
     ##------
 

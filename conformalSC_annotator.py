@@ -14,7 +14,7 @@ import anndata as ad
 from rapidfuzz import fuzz, process
 
 from conformalSC import SingleCellClassifier
-from torchcp.classification.score import THR, RAPS
+from torchcp.classification.score import THR, RAPS, APS
 
 
 import warnings
@@ -29,14 +29,14 @@ class ConformalSCAnnotator:
     and annotates cells using conformal prediction.
     """
         
-    def __init__(self, X, var_query, obs_query=None, var_query_gene_column_name="gene_name"):
+    def __init__(self, X, var_query=None, obs_query=None, var_query_gene_column_name="gene_name"):
 
         self._is_fitted = False 
         self._is_configured = False
 
         ## ------ Elements can be accesed through the object  -----
 
-        self.adata_query = self._prepare_anndata(X, var_query, obs_query, var_query_gene_column_name)
+        self.adata_query = self._check_data(X, var_query, obs_query, var_query_gene_column_name)
         self._annotated_cells:list = []
         self._annotated_cells_sets:dict = {}
         self._model_labels:list = []
@@ -44,8 +44,9 @@ class ConformalSCAnnotator:
         self._mapping:dict = {}
 
 
+
     @staticmethod
-    def _prepare_anndata(data: np.ndarray,
+    def _prepare_anndata(data: Union[np.ndarray, spmatrix],
                          var_query: Union[pd.DataFrame, List[str]],
                          obs_query: Optional[Union[pd.DataFrame, List, np.ndarray]] = None, 
                          var_query_gene_column_name: Optional[str] = "gene_name") -> ad.AnnData:
@@ -108,8 +109,39 @@ class ConformalSCAnnotator:
         
         print("Succesfully generated object: ", adata_query.shape)
 
-        return adata_query   
+        return adata_query  
+
+
     
+    @staticmethod
+    def _check_data(data: Union[pd.DataFrame, spmatrix, np.ndarray, ad.AnnData],
+                    var_query: Optional[Union[pd.DataFrame, List, np.ndarray, None]] = None,
+                    obs_query: Optional[Union[pd.DataFrame, List, np.ndarray, None]] = None, 
+                    var_query_gene_column_name: Optional[str] = "gene_name"):
+        
+
+        if isinstance(data, ad.AnnData):
+
+            try:
+                data.var[var_query_gene_column_name]
+                return data
+
+            except KeyError:
+                raise KeyError(
+                    f"Provide the correct column name containing gene names in -var_query_gene_column_name= -  .")
+            
+    
+
+        if isinstance(data, pd.DataFrame):
+            data = data.to_numpy()
+
+
+        ann_data = ConformalSCAnnotator._prepare_anndata(data, var_query, obs_query, var_query_gene_column_name)
+            
+        return ann_data   
+    
+
+
 
     @property
     def is_configured(self):
@@ -123,12 +155,11 @@ class ConformalSCAnnotator:
             return self._is_configured
 
         # Print configuration details
-        print(f"Configuration loaded for model: {self.model}")
         print(f"CP Predictor: {self.CP_predictor}")
         print(f"Cell Type Level: {self.cell_type_level}")
         print(f"Test Mode: {self.do_test}")
         print(f"Alpha: {self.alpha}")
-        print(f"Model Path: {self.model_data_path}")
+        print(f"Path to reference single cell data: {self.reference_path}")
         print(f"Hidden Sizes: {self.hidden_sizes}")
         print(f"Dropout Rates: {self.dropout_rates}")
         print(f"Learning Rate: {self.learning_rate}")
@@ -195,12 +226,14 @@ class ConformalSCAnnotator:
 
 
     def configure(self,
-                    model,
+                    reference_path: str = None,
+                    model_architecture: Optional[dict] = None,
                     CP_predictor="mondrian",
                     cell_type_level="celltype_level3",
                     cell_types_excluded_treshold = 50,
                     test=False,
                     alpha: Union[float, List[float]] = 0.05, 
+                    non_conformity_function = RAPS(),
                     epoch: int = 10,
                     batch_size: int = 1024,
                     verbose=True):   
@@ -221,9 +254,13 @@ class ConformalSCAnnotator:
             Miscoverage level for conformal prediction.
         """
 
-        # Set default configuration values
 
-        self.model = model
+
+        if isinstance(reference_path, str):
+            self.reference_path = reference_path
+        else:
+            raise ValueError("Please provide a valid path to the reference data.")
+        
 
         if isinstance(alpha, float):
             self.alpha = [alpha]
@@ -235,41 +272,27 @@ class ConformalSCAnnotator:
         self.do_test = test
         self.epoch = epoch
         self.batch_size = batch_size
+        self.non_conformity_function = non_conformity_function
 
-        
-        model_data_path = None
 
-        if self.model == "HumanLung_TopMarkersFC_level3":
-            model_data_path = os.path.join('models', 'HumanLung_TopMarkersFC_level3.h5ad')
+        if model_architecture is None:
             
-            # DESIGN OF THE ANNOTATOR
-            hidden_sizes = [ 128, 128,72, 64]
-            dropout_rates = [ 0.4, 0.3, 0.4, 0.25]
-            learning_rate = 0.0001
-
-        if self.model == "HumanLung_5K_HVG":
-            model_data_path = os.path.join('models', 'HumanLung_5K_HVG.h5ad')
+            model_architecture:dict = {   
+                "hidden_sizes": [128, 128, 64, 64],
+                "dropout_rates": [0.4, 0.3, 0.4, 0.25],
+                "learning_rate": 0.0001}
             
-            # DESIGN OF THE ANNOTATOR
-            hidden_sizes = [ 256, 128,72, 64]
-            dropout_rates = [ 0.4, 0.3, 0.4, 0.25]
-            learning_rate = 0.0005
-            
-        
-        if self.model == "HumanLung_1K_HVG":
-            model_data_path = os.path.join('models', 'HumanLung_1K_HVG.h5ad')
+            warnings.warn("You did not configure the model architecture. A generic one will be used.", UserWarning)
 
-            # DESIGN OF THE ANNOTATOR
-            hidden_sizes = [128,72, 64]
-            dropout_rates = [  0.3, 0.4, 0.25]
-            learning_rate = 0.0005
+           
+        # DESIGN OF THE ANNOTATOR
+        hidden_sizes:list = model_architecture["hidden_sizes"]
+        dropout_rates:list = model_architecture["dropout_rates"]
+        learning_rate:list = model_architecture["learning_rate"]
 
-
-        if model_data_path is None:
-            raise ValueError("Please provide a valid model: 'HumanLung_TopMarkersFC_level3'. 'HumanLung_1K_HVG', 'HumanLung_5K_HVG'")
 
         # Store model configuration
-        self.model_data_path = model_data_path
+        self.reference_path = reference_path
         self.hidden_sizes = hidden_sizes
         self.dropout_rates = dropout_rates
         self.learning_rate = learning_rate
@@ -303,7 +326,7 @@ class ConformalSCAnnotator:
 
 
         # Check if the model where configured
-        if not hasattr(self, 'model') or not self.model:
+        if self._is_configured == False:
             raise ValueError("Please configure the annotator before fitting.")
         
         if self.adata_query is None:
@@ -314,7 +337,7 @@ class ConformalSCAnnotator:
         classifier = SingleCellClassifier(epoch=epoch, batch_size=batch_size, do_test=self.do_test) 
 
         # Load rhe reference data
-        self.adata_query  = classifier.load_data(self.model_data_path,
+        self.adata_query  = classifier.load_data(self.reference_path,
                                                         self.adata_query,
                                                         self.cell_type_level,
                                                         self.cell_types_excluded_treshold,
@@ -326,7 +349,7 @@ class ConformalSCAnnotator:
         classifier.fit(lr=self.learning_rate)
 
         # Calibrate classifier
-        classifier.calibrate(non_conformity_function = RAPS(),
+        classifier.calibrate(non_conformity_function = self.non_conformity_function,
                              alpha = self.alpha,
                              predictors = self.CP_predictor)
             
@@ -367,6 +390,7 @@ class ConformalSCAnnotator:
 
         return None
     
+
 
     def annotate(self, batch_correction="combat"):
 
@@ -459,12 +483,24 @@ if __name__ == "__main__":
 
     annotator.quality_control()  ## This is an optional step to do a basic preprocess the data. If the data is already preprocessed, this step is optional.
 
-    annotator.configure(model = "HumanLung_TopMarkersFC_level3",
+    # Define que network architecture   
+    network_architecture:dict = {   
+                "hidden_sizes": [128, 128, 64, 64],
+                "dropout_rates": [0.4, 0.3, 0.4, 0.25],
+                "learning_rate": 0.0001
+            }
+    
+
+
+    reference_data_path = "models/HumanLung_TopMarkersFC_level3"     # Path to the reference data
+    annotator.configure(reference_path = reference_data_path,
+                        model_architecture = network_architecture,   # Optional, if not provided, default values will be used
                         CP_predictor = "mondrian",                   # mondrian or cluster
-                        cell_type_level = "celltype_level3",        # lineage_level2   celltype_level3
-                        cell_types_excluded_treshold = 50,          # Exclude cell types with less than 50 cells
+                        cell_type_level = "celltype_level3",         # class name for fitting the model.  
+                        cell_types_excluded_treshold = 50,           # Exclude cell types with less than 50 cells
                         test = True,
                         alpha = [0.01, 0.05, 0.1],
+                        non_conformity_function = APS(),            # Provided by or compatible with torchCP    
                         epoch=20,
                         batch_size = 525)  
     
