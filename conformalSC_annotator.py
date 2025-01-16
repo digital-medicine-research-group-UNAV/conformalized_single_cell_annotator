@@ -228,6 +228,7 @@ class ConformalSCAnnotator:
     def configure(self,
                     reference_path: str = None,
                     model_architecture: Optional[dict] = None,
+                    OOD_detector: Optional[dict] = None,
                     CP_predictor="mondrian",
                     cell_type_level="celltype_level3",
                     cell_types_excluded_treshold = 50,
@@ -291,16 +292,40 @@ class ConformalSCAnnotator:
         learning_rate:list = model_architecture["learning_rate"]
 
 
-        # Store model configuration
+        if OOD_detector is None:
+            
+            OOD_detector:dict = {
+                "n_estimators": 500,
+                "max_features": 1,
+                "alpha": 0.05}
+            
+            warnings.warn("You did not configure the OOD_detector. A generic one will be used.", UserWarning)
+
+           
+        # DESIGN OF THE ANNOTATOR
+        n_estimators:int = OOD_detector["n_estimators"]
+        max_features:int = OOD_detector["max_features"]
+        alpha_OOD:float = OOD_detector["alpha"]
+
+
+        # Store model configuration:
         self.reference_path = reference_path
+
         self.hidden_sizes = hidden_sizes
         self.dropout_rates = dropout_rates
         self.learning_rate = learning_rate
+
+        self.n_estimators = n_estimators
+        self.max_features = max_features
+        self.alpha_OOD = alpha_OOD
+
         self.cell_types_excluded_treshold = cell_types_excluded_treshold 
 
+        
         # Reference cell type to be predicted:
-
         calibration_taxonomy = 'celltype_level2' # TO BE IMPLEMEMNTED
+
+
 
         self._is_configured = True
 
@@ -342,6 +367,10 @@ class ConformalSCAnnotator:
                                                         self.cell_type_level,
                                                         self.cell_types_excluded_treshold,
                                                         batch_correction=self.integration_method )
+
+        classifier.fit_OOD_detector(n_estimators=self.n_estimators,
+                                    max_features=self.max_features,
+                                    alpha_OOD=self.alpha_OOD)
 
 
         # Train classifier
@@ -487,23 +516,28 @@ if __name__ == "__main__":
     network_architecture:dict = {   
                 "hidden_sizes": [128, 128, 64, 64],
                 "dropout_rates": [0.4, 0.3, 0.4, 0.25],
-                "learning_rate": 0.0001
-            }
-    
+                "learning_rate": 0.0001}
 
+    OOD_detector_config = {
+                "n_estimators": 500,
+                "max_features": 1,
+                "alpha": 0.02}
+        
 
-    reference_data_path = "models/HumanLung_TopMarkersFC_level3"     # Path to the reference data
+    reference_data_path = os.path.join("models", "HumanLung_TopMarkersFC_level3.h5ad")     # Path to the reference data
+
     annotator.configure(reference_path = reference_data_path,
                         model_architecture = network_architecture,   # Optional, if not provided, default values will be used
-                        CP_predictor = "mondrian",                   # mondrian or cluster
+                        OOD_detector = OOD_detector_config,          # Optional, if not provided, default values will be used
+                        CP_predictor = "cluster",                    # mondrian or cluster
                         cell_type_level = "celltype_level3",         # class name for fitting the model.  
                         cell_types_excluded_treshold = 50,           # Exclude cell types with less than 50 cells
-                        test = True,
-                        alpha = [0.01, 0.05, 0.1],
-                        non_conformity_function = APS(),            # Provided by or compatible with torchCP    
+                        test = True,                                 # Perform internal test of the model
+                        alpha = [0.01, 0.05, 0.1],                   # Confidence of the predictions
+                        non_conformity_function = APS(),             # NC-function provided by or compatible with torchCP    
                         epoch=20,
                         batch_size = 525)  
-    
+        
 
     # annotate your data to a given significance level
     annotator.annotate(batch_correction="combat")  # combat, mnn, harmony

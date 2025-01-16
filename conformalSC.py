@@ -35,6 +35,11 @@ from deel.puncc.api.prediction import BasePredictor
 from deel.puncc.anomaly_detection import SplitCAD
 from sklearn.ensemble import IsolationForest
 
+
+
+
+
+
 # We redefine the predict method to return the opposite of IF scores
 class ADPredictor(BasePredictor):
    def predict(self, X):
@@ -68,6 +73,7 @@ class Annomaly_detector():
                             
         
         return self.if_cad.predict(X_test, alpha=alpha)
+
 
 
 
@@ -423,28 +429,30 @@ class SingleCellClassifier:
         print(f"Train data shape: {self.data_train.shape}")
         print(f"Validation data shape: {self.data_val.shape}")
         print(f"Calibration data shape: {self.data_cal.shape}")
-       
-
-
-        # train OOD detector -------------------------------------
-
-        print("Training OOD detector...")
-        
-        self.OOD_detector = Annomaly_detector(n_estimators = 500 , max_features = 1)
-
-        self.OOD_detector.fit(self.data_train, self.data_cal )
-
-        print("OOD detector trained!")
-
 
         
         if self.do_test:
             print(f"Test data shape: {self.data_test.shape}")
 
-        
         print("Data loaded")
 
         return adata_query
+    
+
+
+    def fit_OOD_detector(self, n_estimators, max_features, alpha_OOD ) -> None:
+
+        print("Training OOD detector...")
+
+        self.alpha_OOD = alpha_OOD
+        
+        self.OOD_detector = Annomaly_detector(n_estimators = n_estimators, max_features = max_features)
+
+        self.OOD_detector.fit(self.data_train, self.data_cal )
+
+        print("OOD detector trained!")
+        
+        return None
     
 
 
@@ -799,7 +807,7 @@ class SingleCellClassifier:
         
         #data_filtered = self.OOD_detector.predict_proba(data).copy()
         #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
-        data_OOD_mask = (self.OOD_detector.predict(data, alpha=0.01)).astype(int)
+        data_OOD_mask = (self.OOD_detector.predict(data, alpha=self.alpha_OOD)).astype(int)
         print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
         
