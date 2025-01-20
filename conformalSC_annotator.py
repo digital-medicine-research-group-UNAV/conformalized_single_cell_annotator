@@ -521,7 +521,7 @@ if __name__ == "__main__":
     OOD_detector_config = {
                 "n_estimators": 500,
                 "max_features": 1,
-                "alpha": 0.02}
+                "alpha": 0.1}
         
 
     reference_data_path = os.path.join("models", "HumanLung_TopMarkersFC_level3.h5ad")     # Path to the reference data

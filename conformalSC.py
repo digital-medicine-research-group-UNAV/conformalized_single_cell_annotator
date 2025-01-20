@@ -19,6 +19,9 @@ import torch.optim as optim
 from sklearn.utils.class_weight import compute_class_weight
 import scanpy.external as sce
 import gc
+
+from sklearn.ensemble import IsolationForest
+
 from IPython.display import display
 
 from collections import Counter
@@ -30,16 +33,17 @@ from torch.utils.data import TensorDataset, DataLoader
 from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
 from torchcp.classification.utils.metrics import Metrics
 
+from annomaly_detector import Annomaly_detector
 
-from deel.puncc.api.prediction import BasePredictor
-from deel.puncc.anomaly_detection import SplitCAD
-from sklearn.ensemble import IsolationForest
-
-
-
+#from deel.puncc.api.prediction import BasePredictor
+#from deel.puncc.anomaly_detection import SplitCAD
+#from sklearn.ensemble import IsolationForest
 
 
 
+
+
+"""
 # We redefine the predict method to return the opposite of IF scores
 class ADPredictor(BasePredictor):
    def predict(self, X):
@@ -57,7 +61,6 @@ class Annomaly_detector():
 
     @property
     def fitted(self):
-        """check whether the model is fitted."""
         return self.is_fitted_
     
     def fit(self, train_set, cal_set):
@@ -73,7 +76,7 @@ class Annomaly_detector():
                             
         
         return self.if_cad.predict(X_test, alpha=alpha)
-
+"""
 
 
 
@@ -445,8 +448,9 @@ class SingleCellClassifier:
         print("Training OOD detector...")
 
         self.alpha_OOD = alpha_OOD
-        
-        self.OOD_detector = Annomaly_detector(n_estimators = n_estimators, max_features = max_features)
+        model = IsolationForest(n_estimators = n_estimators, max_features = max_features, n_jobs=-1)
+
+        self.OOD_detector = Annomaly_detector(oc_model = model, delta=0.05)
 
         self.OOD_detector.fit(self.data_train, self.data_cal )
 
@@ -807,8 +811,9 @@ class SingleCellClassifier:
         
         #data_filtered = self.OOD_detector.predict_proba(data).copy()
         #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
-        data_OOD_mask = (self.OOD_detector.predict(data, alpha=self.alpha_OOD)).astype(int)
-        print(f"OOD samples detected: {data_OOD_mask.sum()}")
+        data_OOD_mask = (self.OOD_detector.predict(data, alpha=self.alpha_OOD,  method="MC")).astype(int)
+        
+        print(f"ID samples detected: {data_OOD_mask.sum()}")
 
         
         ## CLASSICAL PREDICTION
@@ -837,7 +842,7 @@ class SingleCellClassifier:
 
         # Map predicted indices back to original labels and map the OOD samples to "OOD"
         self.predicted_labels = self.unique_labels[predicted_indices].copy() 
-        self.predicted_labels[data_OOD_mask == 1] = "OOD"
+        self.predicted_labels[data_OOD_mask == 0] = "OOD"
         
         # CONFORMAL PREDICTION
 
@@ -880,7 +885,7 @@ class SingleCellClassifier:
                 
                 
                 for i, is_ood in enumerate(data_OOD_mask):
-                    if is_ood == 1:
+                    if is_ood == 0:
                         mapped_predictions[i] = ["OOD"]
 
                 self.prediction_sets[key] = mapped_predictions
