@@ -45,7 +45,7 @@ import scanpy as sc
 from conformal_sc_annotator import ConformalSCAnnotator
 
 # 1. Load your query data
-query_data_path = 'path_to_query/GSE178360_immune.h5ad'
+query_data_path = 'path_to_query/your_query.h5ad'
 adata_query = sc.read_h5ad(query_data_path)
 
 # 2. Extract needed arrays and metadata
@@ -61,20 +61,55 @@ annotator = ConformalSCAnnotator(
 )
 
 # 4. (Optional) Quality control
-annotator.quality_control()  
-# If your data is already preprocessed, feel free to skip this step.
+annotator.quality_control()  # If your data is already preprocessed, skip this step.
+
+```
+Now we need to define the arquitecture of the Neural network.
+
+```python
+
+# Define que network architecture   
+network_architecture:dict = {   
+            "hidden_sizes": [128, 128, 64, 64],
+            "dropout_rates": [0.4, 0.3, 0.4, 0.25],
+            "learning_rate": 0.0001}
+
+```
+And the parameters of out out-of-distribution detector.
+
+```python
+
+OOD_detector_config = {
+            "n_estimators": 130,
+            "max_features": 1,
+            "alpha": 0.03}
+
+```
+
+Let´s load our reference and configurate our tool.
+
+```python
+
+reference_data_path = "path_to_reference/your_reference.h5ad"     # Path to the reference data
+
 
 # 5. Configure model and conformal predictor
-annotator.configure(
-    model="path_to_reference/HumanLung_TopMarkersFC_level3",    # Pre-trained or user-provided model
-    CP_predictor="mondrian",                                # or "cluster"
-    cell_type_level="celltype_level3",                      # lineage_level2, etc.
-    test=True,
-    alpha=[0.01, 0.05, 0.1],                                # confidence levels
-    epoch=20,
-    batch_size=525
-)
+annotator.configure(reference_path = reference_data_path,
+                    model_architecture = network_architecture,   # Optional, if not provided, defaul values will be used
+                    OOD_detector = OOD_detector_config,          # Optional, if not provided, default values will be used
+                    CP_predictor = "cluster",                    # mondrian or cluster
+                    cell_type_level = "celltype_level3",         # class name for fitting the model.  
+                    cell_types_excluded_treshold = 50,           # Exclude cell types with less than 50 cells
+                    test = True,                                 # Perform internal test of the model
+                    alpha = [0.01, 0.05, 0.1],                   # Confidence of the predictions
+                    non_conformity_function = APS(),             # NC-function provided by or compatible with torchCP    
+                    epoch=21,
+                    batch_size = 525)
 
+```
+Finally, we only need to annotate the query dataset
+
+```python
 # 6. Annotate your data (with batch correction)
 annotator.annotate(batch_correction="combat")  # Options: "combat", "mnn", or "harmony"
 
