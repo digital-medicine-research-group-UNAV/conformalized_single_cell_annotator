@@ -450,7 +450,7 @@ class SingleCellClassifier:
         self.alpha_OOD = alpha_OOD
         model = IsolationForest(n_estimators = n_estimators, max_features = max_features, n_jobs=-1)
 
-        self.OOD_detector = Annomaly_detector(oc_model = model, delta=0.05)
+        self.OOD_detector = Annomaly_detector(oc_model = model, delta=0.1)
 
         self.OOD_detector.fit(self.data_train, self.data_cal )
 
@@ -811,7 +811,10 @@ class SingleCellClassifier:
         
         #data_filtered = self.OOD_detector.predict_proba(data).copy()
         #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
-        data_OOD_mask = (self.OOD_detector.predict(data, alpha=self.alpha_OOD,  method="MC")).astype(int)
+
+        self.OOD_detector.predict_pvalues(data,  method="MC")
+        data_OOD_mask, _ = self.OOD_detector.evaluate(alpha=self.alpha_OOD, lambda_par=0.05, use_sbh=True)
+        #data_OOD_mask = ().astype(int)
         
         print(f"ID samples detected: {data_OOD_mask.sum()}")
 
@@ -842,7 +845,7 @@ class SingleCellClassifier:
 
         # Map predicted indices back to original labels and map the OOD samples to "OOD"
         self.predicted_labels = self.unique_labels[predicted_indices].copy() 
-        self.predicted_labels[data_OOD_mask == 0] = "OOD"
+        self.predicted_labels[data_OOD_mask == True] = "OOD"
         
         # CONFORMAL PREDICTION
 
@@ -885,7 +888,7 @@ class SingleCellClassifier:
                 
                 
                 for i, is_ood in enumerate(data_OOD_mask):
-                    if is_ood == 0:
+                    if is_ood == True:
                         mapped_predictions[i] = ["OOD"]
 
                 self.prediction_sets[key] = mapped_predictions
