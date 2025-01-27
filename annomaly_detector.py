@@ -47,7 +47,7 @@ class Annomaly_detector():
         self.oc_model.fit(X_train)
 
         # Calibrate using conditional conformal p-values
-        self.scores_cal = self.oc_model.score_samples(X_calib)
+        self.scores_cal = self.oc_model.score_samples(X_calib).astype(np.float32)
         self.n_cal = len(self.scores_cal)
 
         self.fs_correction = estimate_fs_correction(self.delta, self.n_cal)
@@ -55,12 +55,13 @@ class Annomaly_detector():
         self.is_fitted_ = True
 
     
-    def predict_pvalues(self, X_test, method="MC", simes_kden=2, two_sided=False):
+    def predict_cond_pvalues(self, X_test, method="MC", simes_kden=2, two_sided=False):
 
         if not self.is_fitted_:
             raise ValueError("Not fitted yet.  Call 'fit' with appropriate data before using 'predict'.")
 
-        scores_test = self.oc_model.score_samples(X_test)
+        scores_test = self.oc_model.score_samples(X_test).astype(np.float32)
+        
         scores_mat = np.tile(self.scores_cal, (len(scores_test),1))
         tmp = np.sum(scores_mat <= scores_test.reshape(len(scores_test),1), 1)
         self.marginal_pvalues = (1.0+tmp)/(1.0+self.n_cal)
@@ -120,5 +121,41 @@ class Annomaly_detector():
 
         alpha_eff = alpha/pi
         reject, pvals_adj, _, _ = multipletests(self.conditional_pvalues, alpha=alpha_eff, method='fdr_bh')
+
+        return reject, pvals_adj
+    
+
+    # Function to process query_data in batches
+    def evaluate_in_batches(self, alpha=0.1, lambda_par=0.5, use_sbh=True):
+
+        batch_size = np.sqrt(len(self.scores_cal)).astype(int)
+
+        all_rejects = []
+        all_pvals_adj = []
+
+        # Split query_data into batches of size 'batch_size'
+        num_batches = int(np.ceil(len(self.conditional_pvalues) / batch_size))
+            
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, len(self.conditional_pvalues))
+                
+            query_batch = self.conditional_pvalues[start_idx:end_idx]
+
+            if use_sbh:
+                pi = (1.0 + np.sum(query_batch>lambda_par)) / (len(query_batch)*(1.0 - lambda_par))
+            else:
+                pi = 1.0
+
+            alpha_eff = alpha/pi
+            #print("alpha_eff: ", alpha_eff, pi)
+            reject_batch, pvals_adj_batch, _, _ = multipletests(query_batch, alpha=alpha_eff, method='fdr_bh')
+            
+            all_rejects.append(reject_batch)
+            all_pvals_adj.append(pvals_adj_batch)
+
+        # Concatenate results from all batches
+        reject = np.concatenate(all_rejects, axis=0)
+        pvals_adj = np.concatenate(all_pvals_adj, axis=0)
 
         return reject, pvals_adj

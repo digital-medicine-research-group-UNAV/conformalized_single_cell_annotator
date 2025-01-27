@@ -13,7 +13,7 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 - **Out-of-distribution detection**: Identify those cells not present in the reference data
 - **Plug-and-play model usage**: Easily select your reference (`HumanLung_TopMarkersFC_level3`, etc.) for annotation.  
 - **Quality control**: Optional data preprocessing ensures your input is in top shape before annotation.  
-- **Batch correction**: `combat`, `mnn`, or `harmony`-based correction to handle technical or batch effects.    
+- **Batch correction**:  `harmony`-based correction to handle technical or batch effects.    
 - **Versatile outputs**: Simple access to annotation results, conformal prediction sets, and metrics.
 
 ---
@@ -27,12 +27,16 @@ Scikit-learnt 1.2.2+
 Numpy <2.0.0
 Pytorch
 TorchCP
+torchvision
+transformers
 Scanpy
 
 
 
 ## Quickstart
 Below is an integrated guide to getting started with the Conformalized Single Cell Annotator and understanding its outputs.
+
+
 
 
 
@@ -80,9 +84,8 @@ And the parameters of out out-of-distribution detector.
 ```python
 
 OOD_detector_config = {
-            "n_estimators": 130,
-            "max_features": 1,
-            "alpha": 0.03}
+            "alpha": 0.1,
+            "delta": 0.1}
 
 ```
 
@@ -111,7 +114,7 @@ Finally, we only need to annotate the query dataset
 
 ```python
 # 6. Annotate your data (with batch correction)
-annotator.annotate(batch_correction="combat")  # Options: "combat", "mnn", or "harmony"
+annotator.annotate(batch_correction="harmony")  # Options: "harmony" or "None"(default) if the data is already integrated 
 
 
 # 7. View predicted annotations

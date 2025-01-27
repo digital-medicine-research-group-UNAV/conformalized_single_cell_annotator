@@ -295,17 +295,15 @@ class ConformalSCAnnotator:
         if OOD_detector is None:
             
             OOD_detector:dict = {
-                "n_estimators": 500,
-                "max_features": 1,
-                "alpha": 0.05}
+                "alpha": 0.05,
+                "delta": 0.1}
             
             warnings.warn("You did not configure the OOD_detector. A generic one will be used.", UserWarning)
 
            
         # DESIGN OF THE ANNOTATOR
-        n_estimators:int = OOD_detector["n_estimators"]
-        max_features:int = OOD_detector["max_features"]
         alpha_OOD:float = OOD_detector["alpha"]
+        delta_OOD:float = OOD_detector["delta"]
 
 
         # Store model configuration:
@@ -315,9 +313,8 @@ class ConformalSCAnnotator:
         self.dropout_rates = dropout_rates
         self.learning_rate = learning_rate
 
-        self.n_estimators = n_estimators
-        self.max_features = max_features
         self.alpha_OOD = alpha_OOD
+        self.delta_OOD = delta_OOD
 
         self.cell_types_excluded_treshold = cell_types_excluded_treshold 
 
@@ -368,9 +365,8 @@ class ConformalSCAnnotator:
                                                         self.cell_types_excluded_treshold,
                                                         batch_correction=self.integration_method )
 
-        classifier.fit_OOD_detector(n_estimators=self.n_estimators,
-                                    max_features=self.max_features,
-                                    alpha_OOD=self.alpha_OOD)
+        classifier.fit_OOD_detector(alpha_OOD=self.alpha_OOD,
+                                    delta_OOD=self.delta_OOD)
 
 
         # Train classifier
@@ -397,6 +393,9 @@ class ConformalSCAnnotator:
 
         
         # Perform prediction
+        if self.integration_method == None:
+            classifier.predict(self.adata_query.X.astype(np.float32))
+
         if self.integration_method == "combat":
             classifier.predict(self.adata_query.X.astype(np.float32))
         

@@ -21,6 +21,10 @@ import scanpy.external as sce
 import gc
 
 from sklearn.ensemble import IsolationForest
+from sklearn import svm
+from sklearn.kernel_approximation import Nystroem
+from sklearn.linear_model import SGDOneClassSVM
+from sklearn.pipeline import make_pipeline
 
 from IPython.display import display
 
@@ -130,6 +134,9 @@ class SingleCellClassifier:
         self.batch_size:int = batch_size
         self.do_test:bool = do_test
 
+        self.alpha_OOD:float = 0.1
+        self.delta_OOD:float = 0.1
+
         self.conformal_prediction = False
 
         self.excluded_positions:dict = {}
@@ -211,10 +218,10 @@ class SingleCellClassifier:
             sce.pp.harmony_integrate(adata_combined, key="batch", max_iter_harmony=10, theta=1.5)
 
             print("check integration: ")
-            sc.pp.neighbors(adata_combined, use_rep="X_pca_harmony")
-            sc.tl.umap(adata_combined)
+            #sc.pp.neighbors(adata_combined, use_rep="X_pca_harmony")
+            #sc.tl.umap(adata_combined)
             # Visualize UMAP
-            sc.pl.umap(adata_combined, color=["batch"])
+            #sc.pl.umap(adata_combined, color=["batch"])
 
             # Split back into reference and query
             _adata_ref = adata_combined[adata_combined.obs["batch"] == "ref"]
@@ -312,7 +319,7 @@ class SingleCellClassifier:
                         adata_query, 
                         column_to_predict, 
                         cell_types_excluded_treshold = 0, 
-                        batch_correction=False) -> None:
+                        batch_correction=None) -> None:
 
 
         self.integration_method = batch_correction
@@ -325,7 +332,11 @@ class SingleCellClassifier:
 
         #read single cell reference data model:  
         adata = sc.read_h5ad(reference_data_path)
-        adata.var_names =  adata.var["var_idx"]
+        try:
+            adata.var_names =  adata.var["features"]
+        except KeyError:
+            raise ValueError("please, rename the column in adata.var with the names of the genes as 'features' .")
+
         # read available cell data:
         #model_features =  adata.var
 
@@ -355,7 +366,7 @@ class SingleCellClassifier:
 
         print(f"Common genes detected: {len(common_genes)}")
 
-        if self.integration_method != False:
+        if self.integration_method != None:
 
             print("Running integration....")
             
@@ -363,17 +374,19 @@ class SingleCellClassifier:
 
             print("Data integrated!")
 
-        
+            # Extract feature matrix from reference data
+            if self.integration_method == "combat":
+                self.obs_data = adata.X.astype(np.float32)
+            
+            if self.integration_method == "mnn":
+                self.obs_data = adata.X.astype(np.float32)
 
-        # Extract feature matrix from reference data
-        if self.integration_method == "combat":
-            self.obs_data = adata.X.astype(np.float32)
-        
-        if self.integration_method == "mnn":
+            if self.integration_method == "harmony":
+                self.obs_data = adata.obsm['X_pca_harmony'].astype(np.float32) # we train over the PCA corrected data
+
+        else:
             self.obs_data = adata.X.astype(np.float32)
 
-        if self.integration_method == "harmony":
-            self.obs_data = adata.obsm['X_pca_harmony'].astype(np.float32) # we train over the PCA corrected data
 
         #print(f"Data shape: {self.obs_data.shape}") # (cells, genes)
         
@@ -443,14 +456,19 @@ class SingleCellClassifier:
     
 
 
-    def fit_OOD_detector(self, n_estimators, max_features, alpha_OOD ) -> None:
+    def fit_OOD_detector(self, alpha_OOD, delta_OOD ) -> None:
 
         print("Training OOD detector...")
 
         self.alpha_OOD = alpha_OOD
-        model = IsolationForest(n_estimators = n_estimators, max_features = max_features, n_jobs=-1)
+        self.delta_OOD = delta_OOD
 
-        self.OOD_detector = Annomaly_detector(oc_model = model, delta=0.1)
+        #model = IsolationForest(n_estimators = n_estimators, max_features = max_features, n_jobs=-1)
+        transform = Nystroem(kernel='rbf', n_components=4500, n_jobs=-1)
+        clf_sgd = SGDOneClassSVM( shuffle=True, fit_intercept=True, tol=1.e-4)
+        model = make_pipeline(transform, clf_sgd)
+
+        self.OOD_detector = Annomaly_detector(oc_model = model, delta=self.delta_OOD)
 
         self.OOD_detector.fit(self.data_train, self.data_cal )
 
@@ -793,7 +811,7 @@ class SingleCellClassifier:
                     self.OOD_prediction_sets_[key] = [[set,target] for set,target in zip(result['prediction_set'],result['targets']) ]
                     
                     mapped_predictions = [
-                                [self.unique_labels[idx.item()] for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
+                                [str(self.unique_labels[idx.item()]) for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
                                     for tensor in result['prediction_set'] ]
                     
                     print("\nConformal predictor" ,key, "\nResults per OOD sample: ",  mapped_predictions)
@@ -812,11 +830,11 @@ class SingleCellClassifier:
         #data_filtered = self.OOD_detector.predict_proba(data).copy()
         #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
 
-        self.OOD_detector.predict_pvalues(data,  method="MC")
-        data_OOD_mask, _ = self.OOD_detector.evaluate(alpha=self.alpha_OOD, lambda_par=0.05, use_sbh=True)
+        self.OOD_detector.predict_cond_pvalues(data,  method="MC")
+        data_OOD_mask, _ = self.OOD_detector.evaluate_in_batches(alpha=self.alpha_OOD, lambda_par=0.5, use_sbh=True)
         #data_OOD_mask = ().astype(int)
         
-        print(f"ID samples detected: {data_OOD_mask.sum()}")
+        print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
         
         ## CLASSICAL PREDICTION
@@ -882,7 +900,7 @@ class SingleCellClassifier:
                 
 
                 mapped_predictions = [
-                                [self.unique_labels[idx.item()] for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
+                                [str(self.unique_labels[idx.item()]) for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
                                     for tensor in CP_result['prediction_set'] ]
     
                 
