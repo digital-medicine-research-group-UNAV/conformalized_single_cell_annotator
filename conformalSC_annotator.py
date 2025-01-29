@@ -365,13 +365,14 @@ class ConformalSCAnnotator:
                                                         self.cell_types_excluded_treshold,
                                                         batch_correction=self.integration_method )
 
+        # Fit anomaly detector
         classifier.fit_OOD_detector(alpha_OOD=self.alpha_OOD,
                                     delta_OOD=self.delta_OOD)
-
 
         # Train classifier
         classifier.define_architecture(self.hidden_sizes, self.dropout_rates)
         classifier.fit(lr=self.learning_rate)
+
 
         # Calibrate classifier
         classifier.calibrate(non_conformity_function = self.non_conformity_function,

@@ -37,50 +37,12 @@ from torch.utils.data import TensorDataset, DataLoader
 from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
 from torchcp.classification.utils.metrics import Metrics
 
-from annomaly_detector import Annomaly_detector
+from annomaly_detector import Annomaly_detector, AEOutlierDetector
 
 #from deel.puncc.api.prediction import BasePredictor
 #from deel.puncc.anomaly_detection import SplitCAD
 #from sklearn.ensemble import IsolationForest
 
-
-
-
-
-"""
-# We redefine the predict method to return the opposite of IF scores
-class ADPredictor(BasePredictor):
-   def predict(self, X):
-      #this is the opposite of the annomaly score
-      return -self.model.score_samples(X)
-   
-class Annomaly_detector():
-    def __init__(self, n_estimators =200 , max_features = 1):
-
-        self.ad_model = IsolationForest(n_estimators=n_estimators, max_features=max_features, n_jobs=-1)
-        self.if_predictor = ADPredictor(self.ad_model)
-        self.if_cad = SplitCAD(self.if_predictor, train=True)
-        self.is_fitted_ = False
-    
-
-    @property
-    def fitted(self):
-        return self.is_fitted_
-    
-    def fit(self, train_set, cal_set):
-
-        self.if_cad.fit(z_fit=train_set, z_calib = cal_set)
-        self.is_fitted_ = True
-
-    
-    def predict(self, X_test, alpha=0.05):
-
-        if not self.is_fitted_:
-            raise ValueError("Not fitted yet.  Call 'fit' with appropriate data before using 'predict'.")
-                            
-        
-        return self.if_cad.predict(X_test, alpha=alpha)
-"""
 
 
 
@@ -463,12 +425,16 @@ class SingleCellClassifier:
         self.alpha_OOD = alpha_OOD
         self.delta_OOD = delta_OOD
 
-        #model = IsolationForest(n_estimators = n_estimators, max_features = max_features, n_jobs=-1)
-        transform = Nystroem(kernel='rbf', n_components=4500, n_jobs=-1)
-        clf_sgd = SGDOneClassSVM( shuffle=True, fit_intercept=True, tol=1.e-4)
-        model = make_pipeline(transform, clf_sgd)
+        network_architecture_ = {
+            "hidden_sizes": [164,124,64],
+            "dropout_rates": [0.4, 0.3, 0.4],
+            "learning_rate": 0.0001,
+            "batch_size": 240,
+            "n_epochs": 62}
 
-        self.OOD_detector = Annomaly_detector(oc_model = model, delta=self.delta_OOD)
+        model_oc = AEOutlierDetector(input_dim=self.data_train.shape[1], network_architecture=network_architecture_)
+
+        self.OOD_detector = Annomaly_detector(oc_model = model_oc, delta=self.delta_OOD)
 
         self.OOD_detector.fit(self.data_train, self.data_cal )
 
@@ -492,8 +458,6 @@ class SingleCellClassifier:
         
 
         return None
-    
-
     
 
 
@@ -523,7 +487,7 @@ class SingleCellClassifier:
         # Compute class weights for handling class imbalance
         classes = np.unique(self.labels_train.numpy())
         class_weights = compute_class_weight(class_weight='balanced', classes=classes, y=self.labels_train.numpy())
-        class_weights = torch.tensor(class_weights, dtype=torch.float).to(self.device)
+        class_weights = torch.tensor(class_weights, dtype=torch.float32).to(self.device)
 
         # Define loss criterion and optimizer
         self.criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -535,7 +499,7 @@ class SingleCellClassifier:
             self.model.train()
             train_loss_total = 0
 
-            for batch_idx, (X_batch, y_batch) in enumerate(self.train_loader):
+            for batch_idx, (X_batch, y_batch) in enumerate(self.train_loader , 1):
                 X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
 
 
@@ -565,6 +529,8 @@ class SingleCellClassifier:
             avg_val_loss = val_loss_total / len(self.val_loader)
 
             print(f'Epoch [{epoch+1}/{num_epochs}], Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}')
+
+           
 
         # Save model
         if save_path is not None:
