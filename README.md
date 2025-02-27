@@ -5,16 +5,6 @@ We provide a single-cell annotator based on conformal prediction for robust unce
 
 Conformal prediction provides reliable and rigorous uncertainty estimates [1]. Our Conformalized Single Cell Annotator library lets you annotate your single-cell data at various significance levels, ensuring precise and informative cell-type assignments even in noisy or complex datasets. This tool is designed to be fitted with your reference, and is also robust to out-of-distribution samples.
 
----
-
-## Features
-
-- **Conformal prediction for single-cell**: Obtain a set of likely cell types for each cell, along with user-defined confidence levels.  
-- **Out-of-distribution detection**: Identify those cells not present in the reference data
-- **Plug-and-play model usage**: Easily select your reference (`HumanLung_TopMarkersFC_level3`, etc.) for annotation.  
-- **Quality control**: Optional data preprocessing ensures your input is in top shape before annotation.  
-- **Batch correction**:  `harmony`-based correction to handle technical or batch effects.    
-- **Versatile outputs**: Simple access to annotation results, conformal prediction sets, and metrics.
 
 ---
 
@@ -164,13 +154,6 @@ df_results = pd.DataFrame(results)
 df_results.head(10)
 
 ```
-
-## Interpreting the Output
-
-- **`predicted_labels`**: The single best label predicted by the model.  
-- **`prediction_sets_alpha`**: The conformal prediction set for each significance level (\(\alpha\)). A smaller \(\alpha\) typically means a higher confidence (and potentially smaller sets).  
-- **`_mapped_original_ground_truth_labels`**: If you provided ground truth labels, these are mapped to the model’s label space for easy comparison.  
-- **`results_immune.csv`**: Example CSV file containing predicted labels, conformal prediction sets, and ground truth side-by-side.
 
 
 ## References 
