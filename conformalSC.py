@@ -36,6 +36,7 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
 from torchcp.classification.utils.metrics import Metrics
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from annomaly_detector import Annomaly_detector, AEOutlierDetector
 
@@ -90,11 +91,12 @@ class CustomDataset(Dataset):
 
 class SingleCellClassifier:
 
-    def __init__(self, epoch=4, batch_size = 64, do_test = True):
+    def __init__(self, epoch=4, batch_size = 64, do_test = True, random_state=None):
 
         self.epoch:int = epoch
         self.batch_size:int = batch_size
         self.do_test:bool = do_test
+        self.random_state = random_state
 
         self.alpha_OOD:float = 0.1
         self.delta_OOD:float = 0.1
@@ -177,7 +179,7 @@ class SingleCellClassifier:
             # Apply PCA
             sc.pp.pca(adata_combined)
             # Run Harmony
-            sce.pp.harmony_integrate(adata_combined, key="batch", max_iter_harmony=10, theta=1.5)
+            sce.pp.harmony_integrate(adata_combined, key="batch", max_iter_harmony=50, theta=1.5)
 
             print("check integration: ")
             #sc.pp.neighbors(adata_combined, use_rep="X_pca_harmony")
@@ -281,7 +283,8 @@ class SingleCellClassifier:
                         adata_query, 
                         column_to_predict, 
                         cell_types_excluded_treshold = 0, 
-                        batch_correction=None) -> None:
+                        batch_correction=None,
+                        gene_column_name = "features") -> None:
 
 
         self.integration_method = batch_correction
@@ -291,20 +294,15 @@ class SingleCellClassifier:
 
 
         print("Loading reference data...")
-
+        
         #read single cell reference data model:  
         adata = sc.read_h5ad(reference_data_path)
+
         try:
-            adata.var_names =  adata.var["features"]
+            adata.var_names =  adata.var[gene_column_name]
         except KeyError:
-            raise ValueError("please, rename the column in adata.var with the names of the genes as 'features' .")
+            raise ValueError("please, rename the column with gene names with the same name in both query and reference .")
 
-        # read available cell data:
-        #model_features =  adata.var
-
-        ## This is for cheching integration method
-        #adata.obs.rename(columns={'column_to_predict': 'Cell_subtype'}, inplace=True)
-        #column_to_predict = 'Cell_subtype'
         
         print("Reference data loaded.")
 
@@ -321,33 +319,24 @@ class SingleCellClassifier:
         adata = adata[:, common_genes]
         adata_query = adata_query[:, common_genes]
 
-        
-        # Subset both datasets to include only the common genes
-        #adata = adata[:, self.common_genes_model_indices]
-        #adata_unnanotated = adata_unnanotated[:, common_genes_available_indices]
-
         print(f"Common genes detected: {len(common_genes)}")
 
-        if self.integration_method != None:
 
-            print("Running integration....")
-            
-            adata, adata_query = self.integrate_data(adata, adata_query)  
-
-            print("Data integrated!")
-
-            # Extract feature matrix from reference data
-            if self.integration_method == "combat":
-                self.obs_data = adata.X.astype(np.float32)
-            
-            if self.integration_method == "mnn":
-                self.obs_data = adata.X.astype(np.float32)
-
-            if self.integration_method == "harmony":
-                self.obs_data = adata.obsm['X_pca_harmony'].astype(np.float32) # we train over the PCA corrected data
-
-        else:
+        if self.integration_method not in [None, "X_pca", "X_pca_harmony"]:
+            raise ValueError("Invalid -batch_correction-. Choose from None, 'X_pca', 'X_pca_harmony'. ")
+        
+        if self.integration_method == None:
             self.obs_data = adata.X.astype(np.float32)
+
+
+        if self.integration_method == "X_pca_harmony":
+            self.obs_data = adata.obsm['X_pca_harmony'].astype(np.float32)
+
+        if self.integration_method == "X_pca":
+            self.obs_data = adata.obsm['X_pca'].astype(np.float32)
+
+
+            
 
 
         #print(f"Data shape: {self.obs_data.shape}") # (cells, genes)
@@ -360,11 +349,12 @@ class SingleCellClassifier:
         # Ensure the column to predict exists in metadata
         if column_to_predict not in adata.obs:
             raise ValueError(f"Column '{column_to_predict}' not found in adata.obs.")
-
-        # Extract labels
-        self.labels = adata.obs[column_to_predict].values
+        
 
         
+
+        # Extract labels
+        self.labels = adata.obs[column_to_predict].values  
 
         # Analyze label distribution
         label_distribution = adata.obs[column_to_predict].value_counts()
@@ -372,12 +362,24 @@ class SingleCellClassifier:
         print(label_distribution)
         
 
+
         # Identify and store cell types to exclude
-        self.cell_types_excluded = label_distribution[label_distribution < cell_types_excluded_treshold].index.tolist()
-        print(f"\nExcluding cell types with fewer than {cell_types_excluded_treshold} cells:")
-        print(self.cell_types_excluded)
+        if isinstance(cell_types_excluded_treshold, int): 
+            self.cell_types_excluded = label_distribution[label_distribution < cell_types_excluded_treshold].index.tolist()
+
+        elif isinstance(cell_types_excluded_treshold, list):
+            
+            self.cell_types_excluded = cell_types_excluded_treshold
+        
+        else:
+            raise ValueError("cell_types_excluded_treshold must be an integer of minimum cells to exclude or a list of cell types to exclude.")
         
 
+        print(f"\nExcluding cell types in: {cell_types_excluded_treshold}")
+        print(self.cell_types_excluded)
+        print(adata_query.obs[column_to_predict].value_counts())
+        
+        
         # Exclude cells
         self.exclude_cells()
         self.num_samples = len(self.labels)
@@ -386,22 +388,22 @@ class SingleCellClassifier:
         self.unique_labels, self.labels_encoded = np.unique(self.labels, return_inverse=True)
 
         
-       # Split the data into train, test, val, cal
+        # Split the data into train, test(if specified), val and cal
         if self.do_test:
             data_remaining, self.data_test, labels_remaining, self.labels_test = train_test_split(
-                self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.2)
+                self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.1, random_state=self.random_state)
 
             data_remaining, self.data_val, labels_remaining, self.labels_val = train_test_split(
-                data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.2)
+                data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.15, random_state=self.random_state)
               
         else:
             data_remaining, self.data_val, labels_remaining, self.labels_val = train_test_split(
-                self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.25)
+                self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.25, random_state=self.random_state)
 
 
 
         self.data_train, self.data_cal, self.labels_train, self.labels_cal = train_test_split(
-            data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.40)
+            data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.40, random_state=self.random_state)
 
 
         print(f"Train data shape: {self.data_train.shape}")
@@ -412,29 +414,31 @@ class SingleCellClassifier:
         if self.do_test:
             print(f"Test data shape: {self.data_test.shape}")
 
-        print("Data loaded")
+        print("Data loaded!")
 
         return adata_query
     
 
 
-    def fit_OOD_detector(self, alpha_OOD, delta_OOD ) -> None:
+    def fit_OOD_detector(self, pvalues,  alpha_OOD, delta_OOD,
+                        hidden_sizes_OOD, dropout_rates_OOD,
+                        learning_rate_OOD, batch_size_OOD, n_epochs_OOD ) -> None:
 
         print("Training OOD detector...")
 
         self.alpha_OOD = alpha_OOD
         self.delta_OOD = delta_OOD
 
-        network_architecture_ = {
-            "hidden_sizes": [164,124,64],
-            "dropout_rates": [0.4, 0.3, 0.4],
-            "learning_rate": 0.0001,
-            "batch_size": 240,
-            "n_epochs": 62}
+        network_architecture_OOD = {
+            "hidden_sizes": hidden_sizes_OOD, 
+            "dropout_rates": dropout_rates_OOD,
+            "learning_rate": learning_rate_OOD,
+            "batch_size": batch_size_OOD,
+            "n_epochs": n_epochs_OOD}
 
-        model_oc = AEOutlierDetector(input_dim=self.data_train.shape[1], network_architecture=network_architecture_)
+        model_oc = AEOutlierDetector(input_dim=self.data_train.shape[1], network_architecture=network_architecture_OOD)
 
-        self.OOD_detector = Annomaly_detector(oc_model = model_oc, delta=self.delta_OOD)
+        self.OOD_detector = Annomaly_detector(pvalues, oc_model = model_oc, delta=self.delta_OOD)
 
         self.OOD_detector.fit(self.data_train, self.data_cal )
 
@@ -477,8 +481,8 @@ class SingleCellClassifier:
         self.val_dataset = CustomDataset(self.data_val, self.labels_val)
 
         # Create PyTorch data loaders
-        self.train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
-        self.val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False)
+        self.train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True )
+        self.val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, drop_last=True )
 
         # Move model to the appropriate device (CPU or GPU)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -493,7 +497,17 @@ class SingleCellClassifier:
         self.criterion = nn.CrossEntropyLoss(weight=class_weights)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
+        scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+
         num_epochs = self.epoch  # Assuming self.epoch is defined
+
+
+        # Variables for early stopping
+        best_val_loss = float('inf')
+        epochs_no_improve = 0
+        early_stopping_patience = 5
+
+        
 
         for epoch in range(num_epochs):
             self.model.train()
@@ -502,8 +516,8 @@ class SingleCellClassifier:
             for batch_idx, (X_batch, y_batch) in enumerate(self.train_loader , 1):
                 X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
 
-
                 self.optimizer.zero_grad()
+                
                 outputs = self.model(X_batch)
                 loss = self.criterion(outputs, y_batch)
                 loss.backward()
@@ -524,12 +538,24 @@ class SingleCellClassifier:
                     val_loss = self.criterion(val_outputs, y_val_batch)
                     val_loss_total += val_loss.item()
 
-
-
             avg_val_loss = val_loss_total / len(self.val_loader)
+
+            # Step the scheduler based on the validation loss
+            scheduler.step(avg_val_loss)
 
             print(f'Epoch [{epoch+1}/{num_epochs}], Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}')
 
+            # Early stopping check
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+            
+            if epochs_no_improve >= early_stopping_patience:
+                print("Early stopping triggered!")
+                self._is_fitted = True
+                break
            
 
         # Save model
@@ -541,7 +567,7 @@ class SingleCellClassifier:
 
    
     
-    def calibrate(self, non_conformity_function, alpha = 0.05, predictors = None) -> None:  
+    def calibrate(self, non_conformity_function, alpha = 0.05, predictors = "standard") -> None:  
 
         print("Calibrating the model...")
 
@@ -564,18 +590,28 @@ class SingleCellClassifier:
         
         self.conformal_predictors: dict[float, any]  = {}
 
+        if not callable(non_conformity_function):
+            raise ValueError("non_conformity_function must be callable.")
+
         # Score function and conformal predictor
         for alpha in self.alphas:
-            score_function = non_conformity_function
 
+            score_function = non_conformity_function
+            
             if predictors  == "mondrian":
+                print("Using mondrian taxonomy")
                 conformal_predictor =  ClassWisePredictor(score_function, self.model)
 
             elif predictors == "cluster":
+                print("Using cluster taxonomy")
                 conformal_predictor =  ClusteredPredictor(score_function, self.model)
 
-            else:                           
+            elif predictors == "standard":    
+                print("Using standard taxonomy")                       
                 conformal_predictor = SplitPredictor(score_function, self.model)
+            
+            else:
+                raise ValueError("Invalid conformal predictor. Choose from 'mondrian', 'cluster', or 'standard")
 
             conformal_predictor.calibrate(self.cal_loader, alpha)
             self.conformal_predictors[alpha] = conformal_predictor
@@ -594,7 +630,7 @@ class SingleCellClassifier:
 
         self.test_dataset = CustomDataset(self.data_test, self.labels_test)
 
-        self.test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False)
+        self.test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, drop_last=True)
 
         # Initialize lists to collect results
         true_labels_list = []
@@ -619,6 +655,8 @@ class SingleCellClassifier:
         # Concatenate results
         self.true_labels_ = torch.cat(true_labels_list).cpu().numpy()
         self.predicted_labels_ = torch.cat(predicted_labels_list).cpu().numpy()
+
+        
 
         # Overall performance scores
         self.accuracy_ = accuracy_score(self.true_labels_, self.predicted_labels_)
@@ -679,11 +717,12 @@ class SingleCellClassifier:
                 
                 prediction_sets_tensor = torch.stack(prediction_sets).float().to(self.device)
 
-                # Similar to .evalueate() method in the original code but refined
+                # Similar to .evalueate() method in the original torchcp code but adapted to our needs
                 result = {"coverage_rate": self._metric('coverage_rate')(prediction_sets_tensor, val_labels),
-                            "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels),
-                            "prediction_set": prediction_sets,
-                            "targets": val_labels.tolist()}
+                          "CovGap": self._metric('CovGap')(prediction_sets_tensor, val_labels, key, len(np.unique(self.labels_encoded)) ),
+                          "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels),
+                          "prediction_set": prediction_sets,
+                          "targets": val_labels.tolist()}
 
                 #Calculate size distribution
                 
@@ -691,19 +730,19 @@ class SingleCellClassifier:
                 size_distribution = {size: prediction_set_sizes.count(size) for size in set(prediction_set_sizes)}
                 
                 self.InDis_results_[key] = {'Coverage_rate': result['coverage_rate'],
+                                            'CovGap': result['CovGap'],
                                             'Average_size': result['average_size'],
                                             'Size_distribution': size_distribution}
                 
                 self.InDis_prediction_sets_[key] = [[set,target] for set,target in zip(result['prediction_set'],result['targets']) ]
 
                 # Print results for debugging
-                print(f"\nConformal predictor {key} - Coverage Rate: {result['coverage_rate']}, Average Size: {result['average_size']}")
+                print(f"\nConformal predictor {key} - Coverage Rate: {result['coverage_rate']}, CovGap: {result['CovGap']}, Average Size: {result['average_size']}")
                 print(f"Size Distribution: {size_distribution}")
         
 
+
         ## OUT OF DISTRIBUTION PREDICTION
-
-
 
         if len(self.cell_types_excluded) > 0:
 
@@ -786,19 +825,26 @@ class SingleCellClassifier:
             return None
         
         
+
+        
     def predict(self, data) -> None:
 
         self.prediction_sets:dict = {}
         self.predicted_labels = None
 
-        print("\nPerforming OOD detection...")
-        
-        #data_filtered = self.OOD_detector.predict_proba(data).copy()
-        #data_OOD_mask = (data_filtered[:, 1] > 0.8).astype(int)
 
-        self.OOD_detector.predict_cond_pvalues(data,  method="MC")
-        data_OOD_mask, _ = self.OOD_detector.evaluate_in_batches(alpha=self.alpha_OOD, lambda_par=0.5, use_sbh=True)
-        #data_OOD_mask = ().astype(int)
+        print("\nPerforming OOD detection...")
+
+        self.OOD_detector.predict_pvalues(data)
+        if self.OOD_detector.pvalues == "conditional":
+
+            data_OOD_mask = self.OOD_detector.evaluate_conditional_pvalues(alpha=self.alpha_OOD, lambda_par=0.15, use_sbh=True)
+        else:
+            
+            data_OOD_mask = self.OOD_detector.evaluate_marginal_pvalues(alpha=self.alpha_OOD, lambda_par=0.15, use_sbh=True)
+        
+
+  
         
         print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
@@ -830,19 +876,23 @@ class SingleCellClassifier:
         # Map predicted indices back to original labels and map the OOD samples to "OOD"
         self.predicted_labels = self.unique_labels[predicted_indices].copy() 
         self.predicted_labels[data_OOD_mask == True] = "OOD"
+
+        # save indices of non-OOD samples for recostructing the prediction sets
+        non_ood_mask = torch.from_numpy(~data_OOD_mask).to(data.device)
+        filtered_data = data[non_ood_mask]  # filtered in-distribution data
         
         # CONFORMAL PREDICTION
 
-        placeholder_labels = torch.from_numpy(np.full(len(data), -1)).float()
-        data_cust = CustomDataset(data, placeholder_labels)
-        data_cp= DataLoader(data_cust, batch_size=self.batch_size, shuffle=False)
+        placeholder_labels = torch.from_numpy(np.full(len(filtered_data), -1)).float()
+        data_cust = CustomDataset(filtered_data, placeholder_labels)
+        data_cp = DataLoader(data_cust, batch_size=self.batch_size, shuffle=False)
 
         
         print("\nPerforming conformal prediction...")
         if self.conformal_prediction:
 
             for key in self.conformal_predictors:
-
+                #print("key: ", key)
                 prediction_sets = []
                 labels_list = []
                 with torch.no_grad():
@@ -861,21 +911,25 @@ class SingleCellClassifier:
                             "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels.long()),
                             "prediction_set": prediction_sets,
                             "targets": val_labels.tolist()}
-
-                #CP_result = self.conformal_predictors[key].evaluate(data_cp)
                 
 
-                mapped_predictions = [
+                mapped_predictions_filtered = [
                                 [str(self.unique_labels[idx.item()]) for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
                                     for tensor in CP_result['prediction_set'] ]
     
                 
                 
+                full_mapped_predictions = [None] * len(data_OOD_mask)
+                non_ood_counter = 0
+                
                 for i, is_ood in enumerate(data_OOD_mask):
-                    if is_ood == True:
-                        mapped_predictions[i] = ["OOD"]
+                    if is_ood:
+                        full_mapped_predictions[i] = ["OOD"]
+                    else:
+                        full_mapped_predictions[i] = mapped_predictions_filtered[non_ood_counter]
+                        non_ood_counter += 1
 
-                self.prediction_sets[key] = mapped_predictions
+                self.prediction_sets[key] = full_mapped_predictions
                 
 
         print("\nPerforming conformal prediction: Done\n")
@@ -885,32 +939,3 @@ class SingleCellClassifier:
         
     
 
-
-if __name__ == "__main__":
-
-
-    obs_data_path = 'HumanLung_5K_HVG.h5ad'
-    column_to_predict = 'celltype_level3'   # this is the label column
-    calibration_taxonomy = 'celltype_level2'
-
-    cell_types_excluded_treshold = 15
-
-    hidden_sizes = [ 256, 128,72, 64]
-    dropout_rates = [ 0.4, 0.3, 0.4, 0.25]
-    learning_rate = 0.0005
-
-    alphas = [0.01, 0.05, 0.1, 0.2]
-
-    non_conformity_function = None
-
-    ##------
-
-    classifier = SingleCellClassifier(epoch=10, batch_size = 1128)
-
-    classifier.load_data(obs_data_path,column_to_predict, cell_types_excluded_treshold, print_metadata = False)
-    classifier.define_architecture(hidden_sizes, dropout_rates)
-    classifier.fit(lr=learning_rate, save_path="5K_HVG_model.pth")
-    classifier.calibrate(non_conformity_function, alpha = alphas, predictors = "cluster")
-    classifier.test()
-
-    #classifier.predict(data = None)

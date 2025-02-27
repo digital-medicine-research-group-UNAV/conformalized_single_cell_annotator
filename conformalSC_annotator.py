@@ -25,8 +25,8 @@ class ConformalSCAnnotator:
 
     """
     A single-cell annotator for the bioinformatics and machine learning community.
-    This class prepares data, performs quality control, integrates datasets,
-    and annotates cells using conformal prediction.
+    This is a high-level class that annotates cells using conformal prediction.
+    A low level class named SingleCellClassifier contains the core of the method.
     """
         
     def __init__(self, X, var_query=None, obs_query=None, var_query_gene_column_name="gene_name"):
@@ -36,7 +36,7 @@ class ConformalSCAnnotator:
 
         ## ------ Elements can be accesed through the object  -----
 
-        self.adata_query = self._check_data(X, var_query, obs_query, var_query_gene_column_name)
+        self.adata_query, self.var_query_gene_column_name = self._check_data(X, var_query, obs_query, var_query_gene_column_name)
         self._annotated_cells:list = []
         self._annotated_cells_sets:dict = {}
         self._model_labels:list = []
@@ -99,8 +99,8 @@ class ConformalSCAnnotator:
 
         # Create AnnData object
         adata_query = ad.AnnData(
-            X=data,        # counts data
-            obs=obs_query,  # Rows (samples) as observations
+            X=data,          # counts data
+            obs=obs_query,   # Rows (samples) as observations
             var=var_query    # Columns (genes) as variables 
         )
 
@@ -109,7 +109,7 @@ class ConformalSCAnnotator:
         
         print("Succesfully generated object: ", adata_query.shape)
 
-        return adata_query  
+        return adata_query, var_query_gene_column_name
 
 
     
@@ -123,8 +123,10 @@ class ConformalSCAnnotator:
         if isinstance(data, ad.AnnData):
 
             try:
+                    
                 data.var[var_query_gene_column_name]
-                return data
+                data.var_names = data.var[var_query_gene_column_name]
+                return data, var_query_gene_column_name
 
             except KeyError:
                 raise KeyError(
@@ -136,9 +138,9 @@ class ConformalSCAnnotator:
             data = data.to_numpy()
 
 
-        ann_data = ConformalSCAnnotator._prepare_anndata(data, var_query, obs_query, var_query_gene_column_name)
+        ann_data, var_query_gene_column_name = ConformalSCAnnotator._prepare_anndata(data, var_query, obs_query, var_query_gene_column_name)
             
-        return ann_data   
+        return ann_data, var_query_gene_column_name   
     
 
 
@@ -176,68 +178,23 @@ class ConformalSCAnnotator:
         return self._is_fitted
 
 
-    def quality_control(self,  mito_prefix="MT-", ribo_prefix=("RPS", "RPL"), hb_pattern="^HB[^(P)]"):
-
-        """
-        Perform quality control (QC) preprocessing on the AnnData object.
-
-        Parameters:
-        mito_prefix : str, default="MT-"
-            Prefix identifying mitochondrial genes.
-        ribo_prefix : tuple, default=("RPS", "RPL")
-            Prefixes identifying ribosomal genes.
-        hb_pattern : str, default="^HB[^(P)]"
-            Regex pattern identifying hemoglobin genes.
-        """
-
-        # This step does not duplicate the AnnData object.
-        # It simply creates a new reference to the same object. This is an efficient operation with no additional memory cost.
-        adata_query = self.adata_query
-        
-        print("Filtering low quality cells...")
-
-        # Identify genes of interest
-        adata_query.var["mt"] = adata_query.var_names.str.startswith(mito_prefix)
-        adata_query.var["ribo"] = adata_query.var_names.str.startswith(ribo_prefix)
-        adata_query.var["hb"] = adata_query.var_names.str.contains(hb_pattern, regex=True)
-
-        # Calculate QC metrics
-        sc.pp.calculate_qc_metrics(
-            adata_query, qc_vars=["mt", "ribo", "hb"], inplace=True, log1p=True
-        )
-
-        # Set QC thresholds
-        mito_threshold = 10  # Percentage of mitochondrial counts
-        total_counts_lower_threshold = 100  # Minimum total counts
-
-        # Apply QC filters
-        filter_condition = (
-            (adata_query.obs["pct_counts_mt"] < mito_threshold) & 
-            (adata_query.obs["total_counts"] > total_counts_lower_threshold)
-        )
-        
-        self.adata_query = adata_query[filter_condition]
-
-        print("Filtered! Post-QC shape: ", self.adata_query.shape)
-
-
-        return None
-
-
 
     def configure(self,
                     reference_path: str = None,
                     model_architecture: Optional[dict] = None,
                     OOD_detector: Optional[dict] = None,
                     CP_predictor="mondrian",
-                    cell_type_level="celltype_level3",
-                    cell_types_excluded_treshold = 50,
+                    cell_names_column="celltype_level3",
+                    cell_types_excluded_treshold = 45,
                     test=False,
                     alpha: Union[float, List[float]] = 0.05, 
                     non_conformity_function = RAPS(),
-                    epoch: int = 10,
-                    batch_size: int = 1024,
+                    epoch: int = 20,
+                    batch_size: int = 64,
+                    random_state = None,
                     verbose=True):   
+        
+
 
         """
         Configure the annotator with model-specific settings and conformal prediction parameters.
@@ -247,8 +204,8 @@ class ConformalSCAnnotator:
             Name of the model to load. Supported: 'HumanLung_5K_HVG', 'HumanLung_1K_HVG'.
         CP_predictor : str, default="mondrian"
             Type of conformal predictor to use.
-        cell_type_level : str, default="celltype_level3"
-            Taxonomy level for cell type prediction.
+        cell_names_column : str, default="celltype_level3"
+            Name with the cell type in the reference.
         test : bool, default=False
             If True, run in test mode (e.g., reduced data or faster execution).
         alpha : float, default=0.05
@@ -269,18 +226,19 @@ class ConformalSCAnnotator:
             self.alpha = alpha
 
         self.CP_predictor = CP_predictor
-        self.cell_type_level = cell_type_level
+        self.cell_type_level = cell_names_column
         self.do_test = test
         self.epoch = epoch
         self.batch_size = batch_size
         self.non_conformity_function = non_conformity_function
+        self.random_state = random_state
 
 
         if model_architecture is None:
             
             model_architecture:dict = {   
-                "hidden_sizes": [128, 128, 64, 64],
-                "dropout_rates": [0.4, 0.3, 0.4, 0.25],
+                "hidden_sizes": [128,  64, 64],
+                "dropout_rates": [0.4, 0.3],
                 "learning_rate": 0.0001}
             
             warnings.warn("You did not configure the model architecture. A generic one will be used.", UserWarning)
@@ -295,15 +253,58 @@ class ConformalSCAnnotator:
         if OOD_detector is None:
             
             OOD_detector:dict = {
-                "alpha": 0.05,
-                "delta": 0.1}
+                "pvalues": "marginal",
+                "alpha": 0.1,
+                "delta": 0.1,
+                "hidden_sizes": [ 556,  124],     
+                "dropout_rates": [ 0.3,  0.30], 
+                "learning_rate": 0.001,
+                "batch_size": 64,
+                "n_epochs": 150}
             
             warnings.warn("You did not configure the OOD_detector. A generic one will be used.", UserWarning)
 
            
         # DESIGN OF THE ANNOTATOR
-        alpha_OOD:float = OOD_detector["alpha"]
-        delta_OOD:float = OOD_detector["delta"]
+
+        try:
+            pvalues:str = OOD_detector["pvalues"]
+        except KeyError:
+            warnings.warn("You did not configure -pvalues- in the OOD_detector. -marginal- will be used.", UserWarning)
+            pvalues:str = "marginal"
+
+        try:   
+            alpha_OOD:float = OOD_detector["alpha"]
+        except KeyError:
+            warnings.warn("You did not configure -alpha- in the OOD_detector. -0.1- will be used.", UserWarning)
+            alpha_OOD:float = 0.1
+
+        if pvalues == "conditional":
+            
+            try:   
+                delta_OOD:float = OOD_detector["delta"]
+
+            except KeyError:
+                warnings.warn("You did not configure -delta- in the OOD_detector. -0.1- will be used.", UserWarning)
+                delta_OOD:float = 0.1
+        else:
+            delta_OOD:float = 0
+
+
+        try:
+
+            hidden_sizes_OOD:list = OOD_detector["hidden_sizes"]
+            dropout_rates_OOD:list = OOD_detector["dropout_rates"]
+            learning_rate_OOD:float = OOD_detector["learning_rate"]
+            batch_size_OOD:int = OOD_detector["batch_size"]
+            n_epochs_OOD:int = OOD_detector["n_epochs"]
+
+            if len(hidden_sizes_OOD) != len(dropout_rates_OOD):
+                raise ValueError("The hidden_sizes and dropout_rates must have the same length.")
+
+        except KeyError:
+            raise ValueError("One of the following parameters the OOD detector is missing:\n hidden_sizes,\n dropout_rates,\n learning_rate,\n batch_size,\n n_epochs.")
+
 
 
         # Store model configuration:
@@ -313,37 +314,41 @@ class ConformalSCAnnotator:
         self.dropout_rates = dropout_rates
         self.learning_rate = learning_rate
 
+        self.pvalues = pvalues  
         self.alpha_OOD = alpha_OOD
         self.delta_OOD = delta_OOD
+        self.hidden_sizes_OOD = hidden_sizes_OOD
+        self.dropout_rates_OOD = dropout_rates_OOD
+        self.learning_rate_OOD = learning_rate_OOD
+        self.batch_size_OOD = batch_size_OOD
+        self.n_epochs_OOD = n_epochs_OOD
 
         self.cell_types_excluded_treshold = cell_types_excluded_treshold 
 
         
-        # Reference cell type to be predicted:
-        calibration_taxonomy = 'celltype_level2' # TO BE IMPLEMEMNTED
-
-
-
         self._is_configured = True
 
-        
+    
         return None
      
 
-    # Mayby we can define both a fitted model and a model to be fitted    
+
+   
     def fit(self, epoch , batch_size):   
 
          
         """
+
         Fit the single-cell classifier using the provided data and configuration.
 
         Parameters:
-        epoch : int, default=6
+        epoch : int
              Number of epochs for training the classifier.
-        batch_size : int, default=525
+        batch_size : int
             Size of batches for training.
-        batch_correction : bool, default=True
-            If True, perform Harmony integration of data.
+        batch_correction : bool
+            If True, get the integrated data.
+
         """
 
 
@@ -356,18 +361,26 @@ class ConformalSCAnnotator:
 
 
          # Initialize classifier with training parameters
-        classifier = SingleCellClassifier(epoch=epoch, batch_size=batch_size, do_test=self.do_test) 
+        classifier = SingleCellClassifier(epoch=epoch, batch_size=batch_size, do_test=self.do_test, random_state=self.random_state) 
 
         # Load rhe reference data
         self.adata_query  = classifier.load_data(self.reference_path,
                                                         self.adata_query,
                                                         self.cell_type_level,
                                                         self.cell_types_excluded_treshold,
-                                                        batch_correction=self.integration_method )
+                                                        batch_correction=self.integration_method,
+                                                        gene_column_name = self.var_query_gene_column_name)
 
         # Fit anomaly detector
-        classifier.fit_OOD_detector(alpha_OOD=self.alpha_OOD,
-                                    delta_OOD=self.delta_OOD)
+        classifier.fit_OOD_detector(pvalues=self.pvalues,
+                                    alpha_OOD=self.alpha_OOD,
+                                    delta_OOD=self.delta_OOD,
+                                    hidden_sizes_OOD=self.hidden_sizes_OOD,
+                                    dropout_rates_OOD=self.dropout_rates_OOD,
+                                    learning_rate_OOD=self.learning_rate_OOD,
+                                    batch_size_OOD=self.batch_size_OOD,
+                                    n_epochs_OOD=self.n_epochs_OOD)
+        
 
         # Train classifier
         classifier.define_architecture(self.hidden_sizes, self.dropout_rates)
@@ -378,9 +391,11 @@ class ConformalSCAnnotator:
         classifier.calibrate(non_conformity_function = self.non_conformity_function,
                              alpha = self.alpha,
                              predictors = self.CP_predictor)
-            
+        
+        self.test_results = None   
         if self.do_test:
             classifier.test()
+            self.test_results = classifier.InDis_results_
 
         
         self._is_fitted = True
@@ -393,24 +408,28 @@ class ConformalSCAnnotator:
     def _annotate(self, classifier):
 
         
+
         # Perform prediction
         if self.integration_method == None:
-            classifier.predict(self.adata_query.X.astype(np.float32))
 
-        if self.integration_method == "combat":
-            classifier.predict(self.adata_query.X.astype(np.float32))
-        
-        if self.integration_method == "mnn":
-            classifier.predict(self.adata_query.X.astype(np.float32))
-            
-        if self.integration_method == "harmony":
+            classifier.predict(self.adata_query.X.toarray().astype(np.float32))
+
+        if self.integration_method =='X_pca_harmony':
             classifier.predict(self.adata_query.obsm['X_pca_harmony'].astype(np.float32))
+        
+        if self.integration_method =='X_pca':
+            classifier.predict(self.adata_query.obsm['X_pca'].astype(np.float32))
+
 
         # Extract predictions and prediction sets
         _annotated_cells = classifier.predicted_labels
         _annotated_cells_sets = classifier.prediction_sets
         self._model_labels = classifier.unique_labels 
 
+        
+        self.unique_labels = classifier.unique_labels
+        self.adata_query.labels_encoded = classifier.labels_encoded
+        
         
         # Update observation metadata with predictions
         self.adata_query.obs["predicted_labels"] = _annotated_cells
@@ -443,142 +462,12 @@ class ConformalSCAnnotator:
 
     
 
-
-    def recover_original_cells(self, ground_truth_labels, similarity_threshold=70):
-
-        """
-        Replace labels in the ground truth DataFrame based on exact and probable matches with reference labels.
-
-        Parameters:
-        - model_labels (pd.DataFrame): DataFrame containing reference labels.
-        - ground_truth_labels (pd.DataFrame): DataFrame containing labels to be replaced.
-        - source_col_model (str): Column name in `model_labels` containing reference labels.
-        - source_col_truth (str): Column name in `ground_truth_labels` containing target labels.
-        - similarity_threshold (int): Threshold for fuzzy matching (default is 70).
-
-        Returns:
-        - ground_truth_labels (pd.DataFrame): Updated DataFrame with replaced labels.
-        - mapping (dict): Mapping dictionary used for replacements.
-        """
-
-        # Create sets from the specified columns
-        set1 = set(self._model_labels)  # Reference set (set1)
-        set2 = set(ground_truth_labels)  # Target set (set2)
-
-        # Find exact matches
-        exact_matches = set1 & set2
-
-        # Create a mapping dictionary for replacements
-        self._mapping = {label: label for label in exact_matches}  # Exact matches map to themselves
-
-        # Find probable matches
-        for s1 in set1:  # Exclude exact matches to save processing time
-            match = process.extractOne(s1, set2, scorer=fuzz.ratio)
-            if match and match[1] > similarity_threshold:  # Threshold for similarity
-                self._mapping[match[0]] = s1  # Map target (set2) to reference (set1)
-
-        # Replace elements in the target column of `ground_truth_labels`
-        self._mapped_original_ground_truth_labels= [self._mapping.get(label, "OOD") for label in ground_truth_labels]
-        
-        
-
-        # Print Results
-        print(f"\nExact Matches: {len(exact_matches)}")
-        print(f"\nProbable Matches: {len(self._mapping) - len(exact_matches)}")
-        #print(f"Labels replaced. Remaining 'OOD' labels: {(ground_truth_labels[source_col_truth] == 'OOD').sum()}")
-
    
         
 
 
 
-if __name__ == "__main__":
 
-    
-
-    query_data_path = 'test_data\GSE178360\GSE178360_immune.h5ad'
-    adata_query = sc.read_h5ad(query_data_path) 
-
-    ## This is te expected input data: ##
-
-    X = adata_query.X.astype(np.float32)                        # data matrix (cells x genes)
-    var_query_list = adata_query.var["features"].tolist()       # This is the case of the list
-    #var_query_df = pd.DataFrame({'features':var_query_list })  # Unncomment for testing. This is the case of the df
-    obs_query = adata_query.obs                                 # not needed, for ground thruth test
-
-
-     
-    annotator = ConformalSCAnnotator(X, var_query_list, obs_query) # obs_query is optional, it will be used for annotate the predicted cells. 
-
-    annotator.quality_control()  ## This is an optional step to do a basic preprocess the data. If the data is already preprocessed, this step is optional.
-
-    # Define que network architecture   
-    network_architecture:dict = {   
-                "hidden_sizes": [128, 128, 64, 64],
-                "dropout_rates": [0.4, 0.3, 0.4, 0.25],
-                "learning_rate": 0.0001}
-
-    OOD_detector_config = {
-                "n_estimators": 500,
-                "max_features": 1,
-                "alpha": 0.1}
-        
-
-    reference_data_path = os.path.join("models", "HumanLung_TopMarkersFC_level3.h5ad")     # Path to the reference data
-
-    annotator.configure(reference_path = reference_data_path,
-                        model_architecture = network_architecture,   # Optional, if not provided, default values will be used
-                        OOD_detector = OOD_detector_config,          # Optional, if not provided, default values will be used
-                        CP_predictor = "cluster",                    # mondrian or cluster
-                        cell_type_level = "celltype_level3",         # class name for fitting the model.  
-                        cell_types_excluded_treshold = 50,           # Exclude cell types with less than 50 cells
-                        test = True,                                 # Perform internal test of the model
-                        alpha = [0.01, 0.05, 0.1],                   # Confidence of the predictions
-                        non_conformity_function = APS(),             # NC-function provided by or compatible with torchCP    
-                        epoch=20,
-                        batch_size = 525)  
-        
-
-    # annotate your data to a given significance level
-    annotator.annotate(batch_correction="combat")  # combat, mnn, harmony
-
-    # Get the predictions returning the observations of the query data object
-    #print("\nPredicted annotations sets: \n" , annotator.adata_query.obs)
-
-    
-    ground_truth_labels_list = obs_query["cell_type"].tolist()
-    annotator.recover_original_cells( ground_truth_labels_list, similarity_threshold=70)
-
-
-    y_true = annotator._mapped_original_ground_truth_labels ## Ground thruth labels mapped to the model labels (predictions)
-    #annotator._mapping
-
-
-    results = []
-    for pred,cp_pred_001,cp_pred_005, cp_pred_010, true, o_g_t in zip(
-            annotator.adata_query.obs["predicted_labels"],
-            annotator.adata_query.obs["prediction_sets_0.01"],
-            annotator.adata_query.obs["prediction_sets_0.05"],
-            annotator.adata_query.obs["prediction_sets_0.1"],
-            y_true,
-            ground_truth_labels_list):
-        
-        print(f"Predicted: {pred} - CP 0.01: {cp_pred_001} - CP 0.05: {cp_pred_005} - CP 0.10: {cp_pred_010} - True: {true}. original cell Subt: {o_g_t}")
-        
-        results.append({
-            "Predicted": pred,
-            "CP 0.01": cp_pred_001,
-            "CP 0.05": cp_pred_005,
-            "CP 0.1": cp_pred_010,
-            "True": true,
-            "Original_Cell_Subtype": o_g_t
-        })
-    
-    df_results = pd.DataFrame(results)
-    df_results.to_csv("saves/results_immune.csv", index=False)  # Save to CSV if needed
-
-
-    # now compare cell_annotations with annotator._mapped_original_ground_truth_labels
       
 
 

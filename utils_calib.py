@@ -40,7 +40,7 @@ def compute_hybrid_bound(delta,n,gamma):
     return bound_h
 
 def estimate_fs_correction(delta,n):
-    n_mc = 10000
+    n_mc = 9500
     U = np.random.uniform(size=(n_mc,n))
     U = np.sort(U,axis=1)
     cna = compute_cn(delta,n)
