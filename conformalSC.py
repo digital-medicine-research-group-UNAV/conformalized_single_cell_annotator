@@ -891,20 +891,37 @@ class SingleCellClassifier:
         print("\nPerforming conformal prediction...")
         if self.conformal_prediction:
 
+            
             for key in self.conformal_predictors:
                 #print("key: ", key)
+
+                non_conformity_scores = []   # it will be overwritten because doesnt change with alpha
                 prediction_sets = []
                 labels_list = []
                 with torch.no_grad():
                     for examples in data_cp:
                         tmp_x, tmp_label = examples[0].to(self.device), examples[1].to(self.device)
                         prediction_sets_batch = self.conformal_predictors[key].predict(tmp_x)
+
+                        ## Get the nonconformity scores of the query data ##
+                        x_batch = self.conformal_predictors[key]._model(tmp_x.to(self.conformal_predictors[key]._device)).float()
+                        x_batch = self.conformal_predictors[key]._logits_transformation(x_batch).detach()
+                        scores = self.conformal_predictors[key].score_function(x_batch).to(self.conformal_predictors[key]._device)
+
+                        
+                        #print("qhat: ", self.conformal_predictors[key].q_hat)
+                        #print("prediction_set_scores: ", scores)
+                        
+                        non_conformity_scores.extend(scores)
                         prediction_sets.extend(prediction_sets_batch)
                         labels_list.append(tmp_label)
                             
                 val_labels = torch.cat(labels_list)
                     
                 prediction_sets_tensor = torch.stack(prediction_sets).float().to(self.device)
+                prediction_scores_tensor = torch.stack(non_conformity_scores).float().to(self.device)
+
+                
                     
                 # Similar to .evalueate() method in the original code but refined 
                 CP_result = {"coverage_rate": self._metric('coverage_rate')(prediction_sets_tensor, val_labels.long()),
@@ -920,17 +937,24 @@ class SingleCellClassifier:
                 
                 
                 full_mapped_predictions = [None] * len(data_OOD_mask)
+                prediction_scores = np.full((len(data_OOD_mask), len(self.unique_labels)), np.nan)  
+
+
                 non_ood_counter = 0
-                
                 for i, is_ood in enumerate(data_OOD_mask):
+
                     if is_ood:
                         full_mapped_predictions[i] = ["OOD"]
+                        
+
                     else:
                         full_mapped_predictions[i] = mapped_predictions_filtered[non_ood_counter]
+                        prediction_scores[i, :] = prediction_scores_tensor[non_ood_counter]
                         non_ood_counter += 1
 
                 self.prediction_sets[key] = full_mapped_predictions
-                
+            
+            self.prediction_scores = prediction_scores
 
         print("\nPerforming conformal prediction: Done\n")
    

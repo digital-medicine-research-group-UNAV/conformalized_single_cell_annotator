@@ -424,8 +424,10 @@ class ConformalSCAnnotator:
         # Extract predictions and prediction sets
         _annotated_cells = classifier.predicted_labels
         _annotated_cells_sets = classifier.prediction_sets
+        _annotated_cells_scores = classifier.prediction_scores
         self._model_labels = classifier.unique_labels 
-
+        
+     
         
         self.unique_labels = classifier.unique_labels
         self.adata_query.labels_encoded = classifier.labels_encoded
@@ -435,6 +437,8 @@ class ConformalSCAnnotator:
         self.adata_query.obs["predicted_labels"] = _annotated_cells
         for alpha in self.alpha:
             self.adata_query.obs[f"prediction_sets_{alpha}"] = _annotated_cells_sets[alpha]
+
+        self.adata_query.obs["predicted_NCscores"] = _annotated_cells_scores.tolist()
 
         return None
     
