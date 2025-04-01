@@ -14,12 +14,11 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 
 Python 3.7 +
 Scikit-learnt 1.2.2+
-Numpy <2.0.0
+Numpy 
 Pytorch
-TorchCP
 torchvision
-transformers
-Scanpy
+Scanpy 1.10.4  (and its requirements)
+TorchCP  1.0.1 (and its requirements)
 
 
 
