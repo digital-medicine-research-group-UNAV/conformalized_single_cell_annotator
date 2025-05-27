@@ -2,7 +2,7 @@
 
 
 # Import necessary libraries
-import os
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,24 +11,21 @@ from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
-import json
+
 import scanpy as sc
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.utils.class_weight import compute_class_weight
 import scanpy.external as sce
-import gc
 
-from sklearn.ensemble import IsolationForest
-from sklearn import svm
-from sklearn.kernel_approximation import Nystroem
-from sklearn.linear_model import SGDOneClassSVM
-from sklearn.pipeline import make_pipeline
+from utils import CellTypistWrapper
+from utils import ScmapWrapper
 
-from IPython.display import display
 
-from collections import Counter
+from typing import Union, List, Optional
+
+
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from itertools import chain
 
@@ -40,9 +37,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from annomaly_detector import Annomaly_detector, AEOutlierDetector
 
-#from deel.puncc.api.prediction import BasePredictor
-#from deel.puncc.anomaly_detection import SplitCAD
-#from sklearn.ensemble import IsolationForest
 
 
 
@@ -91,206 +85,62 @@ class CustomDataset(Dataset):
 
 class SingleCellClassifier:
 
-    def __init__(self, epoch=4, batch_size = 64, do_test = True, random_state=None):
+    def __init__(
+        self,
+        classifier_model: str = "torch_net",
+        epoch: int = 4,
+        batch_size: int = 64,
+        do_test: bool = True,
+        random_state: Optional[int] = None) -> None:
 
-        self.epoch:int = epoch
-        self.batch_size:int = batch_size
-        self.do_test:bool = do_test
+        self.classifier_model = classifier_model
+        self.epoch = epoch
+        self.batch_size = batch_size
+        self.do_test = do_test
         self.random_state = random_state
 
-        self.alpha_OOD:float = 0.1
-        self.delta_OOD:float = 0.1
+        self.alpha_OOD = 0.1
+        self.delta_OOD = 0.1
 
         self.conformal_prediction = False
 
-        self.excluded_positions:dict = {}
-        self.labels_index :list = []
-        self.common_gene_names:list = []
-        self.unique_labels:list = []
+        self.excluded_positions: dict = {}
+        self.labels_index: list = []
+        self.common_gene_names: list = []
+        self.unique_labels: list = []
 
         self._metric = Metrics()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     
-    def exclude_cells(self) -> None:
-
-        if not self.cell_types_excluded:
-            print("No cell types to exclude.")
-            return None
-        
-        # Ensure cell_types_excluded is a list
-        if not isinstance(self.cell_types_excluded, (list, tuple)):
-            cell_types = [self.cell_types_excluded]
-        else:
-            cell_types = self.cell_types_excluded
-        
-        exclude_indexes = set()
-        self.excluded_positions = {}    # Initialize a dictionary to store excluded positions
-        self.OOD_data = []              # List to store excluded cell data
-        self.OOD_labels = []            # List to store excluded labels
-        
-        for exclude_cell in cell_types:
-
-            if exclude_cell in self.labels:
-
-                # Find positions of the excluded cell type
-                positions = [i for i, label in enumerate(self.labels) if label == exclude_cell]
-                self.excluded_positions[exclude_cell] = positions
-
-                # Add excluded data and labels to storage
-                self.OOD_data.extend(self.obs_data[i] for i in positions)
-                self.OOD_labels.extend(self.labels[i] for i in positions)
-
-
-                exclude_indexes.update(positions)
-
-            else:
-                print(f"Cell-type {exclude_cell} not found in labels")
-
-
-        # Convert excluded data and labels to numpy arrays 
-        self.OOD_data = np.array(self.OOD_data)
-        self.OOD_labels = np.array(self.OOD_labels)
-        
-        # Filter out the excluded cells from labels and data
-        self.labels = [label for i, label in enumerate(self.labels) if i not in exclude_indexes]
-        self.obs_data = np.array([row for i, row in enumerate(self.obs_data) if i not in exclude_indexes])
-        
-        # Update labels index to reflect filtered positions
-        self.labels_index = [i for i in range(len(self.labels))]
-
-        print(f"Excluded {len(exclude_indexes)} cells. Remaining cells: {len(self.labels)}")
-        print(f"Stored {len(self.OOD_data)} excluded cells in a separate dataset.")
-
-        return None
-
-
-
-    def integrate_data(self, _adata_ref, adata_query):
-
-
-        if self.integration_method == "harmony":
+    def lognormalizate_adata(self) -> None:
             
-            # Combine datasets for Harmony correction
-            adata_combined = _adata_ref.concatenate(adata_query, batch_categories=["ref", "query"],  batch_key="batch")
+            sc.pp.normalize_total(self.adata_train, target_sum=1e4)  
+            sc.pp.log1p(self.adata_train)
 
-            del adata_query, _adata_ref # free memory
-            gc.collect()  # Force garbage collection
-
-            # Apply PCA
-            sc.pp.pca(adata_combined)
-            # Run Harmony
-            sce.pp.harmony_integrate(adata_combined, key="batch", max_iter_harmony=50, theta=1.5)
-
-            print("check integration: ")
-            #sc.pp.neighbors(adata_combined, use_rep="X_pca_harmony")
-            #sc.tl.umap(adata_combined)
-            # Visualize UMAP
-            #sc.pl.umap(adata_combined, color=["batch"])
-
-            # Split back into reference and query
-            _adata_ref = adata_combined[adata_combined.obs["batch"] == "ref"]
-            adata_query = adata_combined[adata_combined.obs["batch"] == "query"]
+            if self.do_test:
+                sc.pp.normalize_total(self.adata_test, target_sum=1e4)
+                sc.pp.log1p(self.adata_test)
             
-            del adata_combined 
-            gc.collect()  # Force garbage collection
+            sc.pp.normalize_total(self.adata_cal, target_sum=1e4)
+            sc.pp.log1p(self.adata_cal)
+            print("Data log-normalized for celltypist.")
 
-            return _adata_ref, adata_query
-    
-
-
-        if self.integration_method == "combat":
-
-            adata_combined = _adata_ref.concatenate(adata_query, batch_categories=["ref", "query"],  batch_key="batch")
-
-            adata_combined.X = adata_combined.X.astype(np.float32) # convert to float32
-
-            del adata_query, _adata_ref # free memory
-
-            sc.pp.combat(adata_combined, key='batch')
-            
-            #print("check integration: ")
-            #sc.pp.neighbors(adata_combined)
-            #sc.tl.umap(adata_combined)
-            #adata_combined.write("saves\integrated_adata_combat.h5ad")
-
-            #umap_coords = pd.DataFrame(
-            #    adata_combined.obsm["X_umap"],
-            #    columns=["UMAP1", "UMAP2"],
-            #    index=adata_combined.obs_names)
-            
-            #umap_coords.to_csv(r"saves\umap_coordinates_combat.csv")  # Save UMAP coordinates to CSV
-
-            # Visualize UMAP
-            #sc.pl.umap(adata_combined, color=["batch"])
-            #sc.pl.umap(adata_combined, color=['Cell_subtype'])
-            #sc.pl.umap(adata_combined, color=['celltype_level3'])
-
-            # Split back into reference and query
-            _adata_ref = adata_combined[adata_combined.obs["batch"] == "ref"]
-            adata_query = adata_combined[adata_combined.obs["batch"] == "query"]
-            
-            del adata_combined 
-            gc.collect()  # Force garbage collection
-
-            return _adata_ref, adata_query
-        
-
-        if self.integration_method == "mnn":
-
-            adata_combined = _adata_ref.concatenate(adata_query, batch_categories=["ref", "query"],  batch_key="batch")
-
-            del adata_query, _adata_ref # free memory
-
-            sce.pp.mnn_correct(adata_combined, key='batch')
-
-            print("check integration: ")
-            sc.pp.neighbors(adata_combined)
-            sc.tl.umap(adata_combined)
-            #print("check integration: ")
-            # Color by batch to see batch correction
-            #sc.pl.umap(adata_combined, color="batch")
-            
-            
-            #sc.pp.pca(adata_combined)
-            #sc.pp.neighbors(adata_combined, use_rep="X_pca")
-            #sc.tl.umap(adata_combined)
-
-            print("check integration: ")
-
-            #sc.pl.umap(adata_combined, color=["batch", "Cell_subtype"], wspace=0.4)
-
-            #sc.tl.leiden(adata_combined, resolution=0.5)
-            #sc.pl.umap(adata_combined, color=["batch", "leiden"])
-
-            # Split back into reference and query
-            _adata_ref = adata_combined[adata_combined.obs["batch"] == "ref"]
-            adata_query = adata_combined[adata_combined.obs["batch"] == "query"]
-            
-            del adata_combined 
-            gc.collect()  # Force garbage collection
-
-            return _adata_ref, adata_query
-
-        return ValueError("Invalid integration method. Choose from False, 'combat', 'harmony', or 'mnn'.")
-    
-
-            
-    
+            return None 
 
 
+    def load_data(self,
+                    reference_data_path: str,
+                    adata_query,
+                    column_to_predict: str,
+                    cell_types_excluded_treshold: Union[int, List[str]] = 0,
+                    obsm_layer: Optional[str] = None,
+                    gene_column_name: str = "features") -> None:
 
-    def load_data(self, reference_data_path,
-                        adata_query, 
-                        column_to_predict, 
-                        cell_types_excluded_treshold = 0, 
-                        batch_correction=None,
-                        gene_column_name = "features") -> None:
-
-
-        self.integration_method = batch_correction
-        self.cell_types_excluded_treshold:int = cell_types_excluded_treshold
+        self.column_to_predict = column_to_predict
+        self.obsm_layer = obsm_layer
+        self.cell_types_excluded_treshold = cell_types_excluded_treshold
         self.cell_types_excluded:list[str] = []
-
 
 
         print("Loading reference data...")
@@ -303,118 +153,179 @@ class SingleCellClassifier:
         except KeyError:
             raise ValueError("please, rename the column with gene names with the same name in both query and reference .")
 
+        # Ensure the column to predict exists in metadata
+        if self.column_to_predict not in adata.obs:
+            raise ValueError(f"Column '{self.column_to_predict}' not found in adata.obs.")
+        
+        print(f"Reference data shape: {adata.shape}\n") # (cells, genes)
         
         print("Reference data loaded.")
 
-        print("Detecting common genes...")
-        # Find intersection of genes between reference and query datasets
 
-        #self.get_common_genes(model_features, list_of_available_features)
-       
-        common_genes = adata.var_names.intersection(adata_query.var_names)
-        if common_genes.empty:
-            raise ValueError("No common genes found between reference and query datasets.")
-        
-        # Subset the datasets to only include common genes
-        adata = adata[:, common_genes]
-        adata_query = adata_query[:, common_genes]
-
-        print(f"Common genes detected: {len(common_genes)}")
-
-
-        if self.integration_method not in [None, "X_pca", "X_pca_harmony"]:
-            raise ValueError("Invalid -batch_correction-. Choose from None, 'X_pca', 'X_pca_harmony'. ")
-        
-        if self.integration_method == None:
-            self.obs_data = adata.X.astype(np.float32)
-
-
-        if self.integration_method == "X_pca_harmony":
-            self.obs_data = adata.obsm['X_pca_harmony'].astype(np.float32)
-
-        if self.integration_method == "X_pca":
-            self.obs_data = adata.obsm['X_pca'].astype(np.float32)
-
-
-            
-
-
-        #print(f"Data shape: {self.obs_data.shape}") # (cells, genes)
-        
-        # If the data is sparse, convert it to dense format (In the future, we can use sparse tensors)
-        if not isinstance(self.obs_data, (np.ndarray, torch.Tensor)):
-            
-            self.obs_data = self.obs_data.toarray().astype(np.float32)
-
-        # Ensure the column to predict exists in metadata
-        if column_to_predict not in adata.obs:
-            raise ValueError(f"Column '{column_to_predict}' not found in adata.obs.")
-        
-
-        
 
         # Extract labels
-        self.labels = adata.obs[column_to_predict].values  
-
-        # Analyze label distribution
-        label_distribution = adata.obs[column_to_predict].value_counts()
-        print("\nLabel distribution:")
+          
+        label_distribution = adata.obs[self.column_to_predict].value_counts()
+        print("\nInitial reference data label distribution:")
         print(label_distribution)
-        
 
+        try:
+            print("\nQuery data label distribution:")
+            print(adata_query.obs[self.column_to_predict].value_counts())
+        except KeyError:
+            raise ValueError(f"Column '{self.column_to_predict}' not found in adata_query.obs.")
+    
+        
 
         # Identify and store cell types to exclude
         if isinstance(cell_types_excluded_treshold, int): 
             self.cell_types_excluded = label_distribution[label_distribution < cell_types_excluded_treshold].index.tolist()
 
         elif isinstance(cell_types_excluded_treshold, list):
-            
             self.cell_types_excluded = cell_types_excluded_treshold
         
         else:
-            raise ValueError("cell_types_excluded_treshold must be an integer of minimum cells to exclude or a list of cell types to exclude.")
+            raise ValueError("Cell_types_excluded_treshold must be an integer of minimum cells to exclude or a list of cell types to exclude.")
         
 
-        print(f"\nExcluding cell types in: {cell_types_excluded_treshold}")
+        print(f"\nExcluding cell types in: {cell_types_excluded_treshold}:")
         print(self.cell_types_excluded)
-        print(adata_query.obs[column_to_predict].value_counts())
+
+        mask = ~adata.obs[self.column_to_predict].isin(self.cell_types_excluded)
+        adata = adata[mask].copy()
+
+        self.labels   = adata.obs[self.column_to_predict].values.tolist()
+        self.labels_index = list(range(adata.n_obs))
         
-        
-        # Exclude cells
-        self.exclude_cells()
         self.num_samples = len(self.labels)
         
         # Encode labels
         self.unique_labels, self.labels_encoded = np.unique(self.labels, return_inverse=True)
+        
+
+
+
+        if self.classifier_model != "celltypist":
+            print("Detecting common genes...")
+        
+            common_genes = adata.var_names.intersection(adata_query.var_names)
+            if common_genes.empty:
+                raise ValueError("No common genes found between reference and query datasets.")
+            
+            # Subset the datasets to only include common genes
+            adata = adata[:, common_genes]
+            adata_query = adata_query[:, common_genes]
+
+            print(f"Common genes detected: {len(common_genes)}")
+
+
 
         
-        # Split the data into train, test(if specified), val and cal
-        if self.do_test:
-            data_remaining, self.data_test, labels_remaining, self.labels_test = train_test_split(
-                self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.1, random_state=self.random_state)
 
-            data_remaining, self.data_val, labels_remaining, self.labels_val = train_test_split(
-                data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.15, random_state=self.random_state)
-              
+        
+        
+
+        all_idx = np.arange(adata.n_obs)  # 0 … n_obs-1 
+        
+        
+
+        if self.do_test:
+            
+            idx_remain, idx_test = train_test_split(
+                all_idx,
+                test_size=0.10,
+                shuffle=True,
+                stratify=self.labels_encoded,
+                random_state=self.random_state)   
+
+           
+            idx_remain, idx_val = train_test_split(
+                idx_remain,
+                test_size=0.15,
+                stratify=self.labels_encoded[idx_remain],
+                random_state=self.random_state
+            ) 
+
         else:
-            data_remaining, self.data_val, labels_remaining, self.labels_val = train_test_split(
-                self.obs_data, self.labels_encoded, stratify=self.labels_encoded, test_size=0.25, random_state=self.random_state)
+            
+            idx_remain, idx_val = train_test_split(
+                all_idx,
+                test_size=0.40,
+                stratify=self.labels_encoded,
+                random_state=self.random_state
+            )
+        
+        # Finally, calibration set is empty in this case
+        
+        idx_train, idx_cal = train_test_split(
+            idx_remain,
+            test_size=0.25,
+            stratify=self.labels_encoded[idx_remain],
+            random_state=self.random_state
+        )
+        
+        # Subsets
+        self.adata_train = adata[idx_train].copy()  
+        self.adata_val   = adata[idx_val].copy()
+        self.adata_test  = adata[idx_test].copy() if self.do_test else None
+        self.adata_cal   = adata[idx_cal].copy() 
 
-
-
-        self.data_train, self.data_cal, self.labels_train, self.labels_cal = train_test_split(
-            data_remaining, labels_remaining, stratify=labels_remaining, test_size=0.40, random_state=self.random_state)
-
-
-        print(f"Train data shape: {self.data_train.shape}")
-        print(f"Validation data shape: {self.data_val.shape}")
-        print(f"Calibration data shape: {self.data_cal.shape}")
+        if self.classifier_model == "celltypist":
+            self.lognormalizate_adata()
+            
+        self.labels_train  = torch.from_numpy(self.labels_encoded[idx_train]).long()
+        self.labels_val    = torch.from_numpy(self.labels_encoded[idx_val]).long()
+        self.labels_test   = torch.from_numpy(self.labels_encoded[idx_test]).long() if self.do_test else None
+        self.labels_cal    = torch.from_numpy(self.labels_encoded[idx_cal]).long()
 
         
-        if self.do_test:
-            print(f"Test data shape: {self.data_test.shape}")
 
-        print("Data loaded!")
+        print(f"Train data shape: {self.adata_train.shape}")
+        print(f"Validation data shape: {self.adata_val.shape}")
+        if self.do_test:
+            print(f"Test data shape: {self.adata_test.shape}")
+        print(f"Calibration data shape: {self.adata_cal.shape}\n")
+
+       
+        
+
+        if self.obsm_layer == None:
+            self.data_train = self.adata_train.X.astype(np.float32)
+            self.data_val = self.adata_val.X.astype(np.float32)
+            if self.do_test:
+                self.data_test = self.adata_test.X.astype(np.float32)
+            self.data_cal = self.adata_cal.X.astype(np.float32)
+
+        
+
+        if self.obsm_layer is not None :
+            self.data_train = self.adata_train.obsm[self.obsm_layer].astype(np.float32)
+            self.data_val = self.adata_val.obsm[self.obsm_layer].astype(np.float32)
+            if self.do_test:
+                self.data_test = self.adata_test.obsm[self.obsm_layer].astype(np.float32)
+            self.data_cal = self.adata_cal.obsm[self.obsm_layer].astype(np.float32)
+
+        
+        
+        # If the data is sparse, convert it to dense format (In the future, we can use sparse tensors)
+        if not isinstance(self.data_train, (np.ndarray, torch.Tensor)):  
+            self.data_train = self.data_train.toarray().astype(np.float32)
+
+        
+        
+        if not isinstance(self.data_val, (np.ndarray, torch.Tensor)):
+            self.data_val = self.data_val.toarray().astype(np.float32)
+        
+        if self.do_test and not isinstance(self.data_test, (np.ndarray, torch.Tensor)):
+            self.data_test = self.data_test.toarray().astype(np.float32)
+        
+       
+       
+        if not isinstance(self.data_cal, (np.ndarray, torch.Tensor)):
+            self.data_cal = self.data_cal.toarray().astype(np.float32)
+
+
+        print("\nData loaded!")
 
         return adata_query
     
@@ -424,7 +335,8 @@ class SingleCellClassifier:
                         hidden_sizes_OOD, dropout_rates_OOD,
                         learning_rate_OOD, batch_size_OOD, n_epochs_OOD ) -> None:
 
-        print("Training OOD detector...")
+
+        print("\nTraining OOD detector...")
 
         self.alpha_OOD = alpha_OOD
         self.delta_OOD = delta_OOD
@@ -434,10 +346,12 @@ class SingleCellClassifier:
             "dropout_rates": dropout_rates_OOD,
             "learning_rate": learning_rate_OOD,
             "batch_size": batch_size_OOD,
-            "n_epochs": n_epochs_OOD}
-
+            "n_epochs": n_epochs_OOD,
+            "patience":      3}
+        
+        
         model_oc = AEOutlierDetector(input_dim=self.data_train.shape[1], network_architecture=network_architecture_OOD)
-
+        
         self.OOD_detector = Annomaly_detector(pvalues, oc_model = model_oc, delta=self.delta_OOD)
 
         self.OOD_detector.fit(self.data_train, self.data_cal )
@@ -452,7 +366,7 @@ class SingleCellClassifier:
 
         # Define network architecture 
         
-        input_size = self.obs_data.shape[1]  # Number of input features (genes)
+        input_size = self.data_train.shape[1]  # Number of input features (genes)
         output_size = len(np.unique(self.labels_encoded)) # Number of unique classes (cell types)
         print("Input size: ", input_size)
         print("Output size: ", output_size)
@@ -465,27 +379,23 @@ class SingleCellClassifier:
     
 
 
-    def fit(self, lr=0.001, save_path=None) -> None:
+    def fit_network(self, lr=0.001, save_path=None) -> None:
 
-
+        
         # Convert data and labels to PyTorch tensors
         self.data_train = torch.from_numpy(self.data_train).float()
-        self.labels_train = torch.from_numpy(self.labels_train).long()
-
+        
         self.data_val = torch.from_numpy(self.data_val).float()
-        self.labels_val = torch.from_numpy(self.labels_val).long()
-
-
+        
         # Create PyTorch datasets
         self.train_dataset = CustomDataset(self.data_train, self.labels_train)
         self.val_dataset = CustomDataset(self.data_val, self.labels_val)
-
+        
         # Create PyTorch data loaders
         self.train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True )
         self.val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, drop_last=True )
-
+        
         # Move model to the appropriate device (CPU or GPU)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
         # Compute class weights for handling class imbalance
@@ -557,7 +467,6 @@ class SingleCellClassifier:
                 self._is_fitted = True
                 break
            
-
         # Save model
         if save_path is not None:
             torch.save(self.model, save_path)
@@ -565,20 +474,60 @@ class SingleCellClassifier:
 
         return None
 
-   
+
+
+
+    def fit_celltypist(self, column_to_predict) -> None:
+        
+        print("Training celltypist model...")
+
+        self.model = CellTypistWrapper(cal_adata_genes = self.adata_train.var_names.tolist())
+
+        self.model.to(self.device)
+
+        self.model.train()
+
+
+        self.model.train_model(self.adata_train, label_key=column_to_predict)
+
+        return None
     
+
+    def fit_scmap(self, column_to_predict) -> None:
+        
+        print("Training scmap model...")
+
+        self.model = ScmapWrapper(cal_adata_genes = self.adata_train.var_names.tolist())
+
+        self.model.to(self.device)
+
+        self.model.train()
+
+
+        self.model.train_model(self.adata_train, label_key=column_to_predict)
+
+        return None
+
+
+
     def calibrate(self, non_conformity_function, alpha = 0.05, predictors = "standard") -> None:  
 
         print("Calibrating the model...")
 
         self.data_cal = torch.from_numpy(self.data_cal).float()
-        self.labels_cal = torch.from_numpy(self.labels_cal).long()  
+        #self.labels_cal = torch.from_numpy(self.labels_cal).long()  
 
+        
         self.cal_dataset = CustomDataset(self.data_cal, self.labels_cal)
+
+        if self.classifier_model != "torch_net":
+            self.batch_size = self.data_cal.shape[0]  # Use the entire calibration set as a single batch
 
         self.cal_loader = DataLoader(self.cal_dataset, batch_size=self.batch_size, shuffle=False)
         
         self.conformal_prediction = True   
+        
+        
 
         if not isinstance(alpha, (list, tuple)):
             self.alphas = [alpha]
@@ -626,11 +575,14 @@ class SingleCellClassifier:
         self.model.eval()   
         
         self.data_test = torch.from_numpy(self.data_test).float()
-        self.labels_test = torch.from_numpy(self.labels_test).long()
+        #self.labels_test = torch.from_numpy(self.labels_test).long()
 
         self.test_dataset = CustomDataset(self.data_test, self.labels_test)
 
-        self.test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, drop_last=True)
+        if self.classifier_model != "torch_net":
+            self.batch_size = self.data_test.shape[0]
+
+        self.test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False)
 
         # Initialize lists to collect results
         true_labels_list = []
@@ -740,10 +692,12 @@ class SingleCellClassifier:
                 print(f"\nConformal predictor {key} - Coverage Rate: {result['coverage_rate']}, CovGap: {result['CovGap']}, Average Size: {result['average_size']}")
                 print(f"Size Distribution: {size_distribution}")
         
-
+    
 
         ## OUT OF DISTRIBUTION PREDICTION
 
+        """ 
+        # ELIMINAR 
         if len(self.cell_types_excluded) > 0:
 
             self.OOD_data_test = torch.from_numpy(self.OOD_data).float()
@@ -823,8 +777,9 @@ class SingleCellClassifier:
                     print(f"Size Distribution: {size_distribution}")
 
             return None
+        """
         
-        
+        return None
 
         
     def predict(self, data) -> None:
@@ -850,7 +805,7 @@ class SingleCellClassifier:
 
         
         ## CLASSICAL PREDICTION
-
+            
         # If the data is sparse, convert it to dense format
         if not isinstance(data, (np.ndarray, torch.Tensor)):
             data = data.toarray().astype(np.float32)
@@ -885,6 +840,10 @@ class SingleCellClassifier:
 
         placeholder_labels = torch.from_numpy(np.full(len(filtered_data), -1)).float()
         data_cust = CustomDataset(filtered_data, placeholder_labels)
+
+        if self.classifier_model != "torch_net":
+            self.batch_size = filtered_data.shape[0]
+
         data_cp = DataLoader(data_cust, batch_size=self.batch_size, shuffle=False)
 
         

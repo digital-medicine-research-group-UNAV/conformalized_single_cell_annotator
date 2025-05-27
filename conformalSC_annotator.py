@@ -29,7 +29,12 @@ class ConformalSCAnnotator:
     A low level class named SingleCellClassifier contains the core of the method.
     """
         
-    def __init__(self, X, var_query=None, obs_query=None, var_query_gene_column_name="gene_name"):
+    def __init__(self, 
+                 X, 
+                 var_query=None, 
+                 obs_query=None, 
+                 var_query_gene_column_name="gene_name", 
+                 underlying_model="torch_net"):
 
         self._is_fitted = False 
         self._is_configured = False
@@ -37,6 +42,7 @@ class ConformalSCAnnotator:
         ## ------ Elements can be accesed through the object  -----
 
         self.adata_query, self.var_query_gene_column_name = self._check_data(X, var_query, obs_query, var_query_gene_column_name)
+        self.underlying_model = underlying_model 
         self._annotated_cells:list = []
         self._annotated_cells_sets:dict = {}
         self._model_labels:list = []
@@ -144,7 +150,6 @@ class ConformalSCAnnotator:
     
 
 
-
     @property
     def is_configured(self):
 
@@ -184,7 +189,7 @@ class ConformalSCAnnotator:
                     model_architecture: Optional[dict] = None,
                     OOD_detector: Optional[dict] = None,
                     CP_predictor="mondrian",
-                    cell_names_column="celltype_level3",
+                    cell_names_column=None,
                     cell_types_excluded_treshold = 45,
                     test=False,
                     alpha: Union[float, List[float]] = 0.05, 
@@ -204,7 +209,7 @@ class ConformalSCAnnotator:
             Name of the model to load. Supported: 'HumanLung_5K_HVG', 'HumanLung_1K_HVG'.
         CP_predictor : str, default="mondrian"
             Type of conformal predictor to use.
-        cell_names_column : str, default="celltype_level3"
+        cell_names_column : str, default="None"
             Name with the cell type in the reference.
         test : bool, default=False
             If True, run in test mode (e.g., reduced data or faster execution).
@@ -212,6 +217,7 @@ class ConformalSCAnnotator:
             Miscoverage level for conformal prediction.
         """
 
+        
 
 
         if isinstance(reference_path, str):
@@ -219,113 +225,106 @@ class ConformalSCAnnotator:
         else:
             raise ValueError("Please provide a valid path to the reference data.")
         
-
-        if isinstance(alpha, float):
-            self.alpha = [alpha]
-        else:
-            self.alpha = alpha
+        # Unificar alpha en lista
+        self.alpha = [alpha] if isinstance(alpha, float) else alpha
 
         self.CP_predictor = CP_predictor
         self.cell_type_level = cell_names_column
         self.do_test = test
-        self.epoch = epoch
-        self.batch_size = batch_size
         self.non_conformity_function = non_conformity_function
         self.random_state = random_state
+        self.epoch = epoch
+        self.batch_size = batch_size
+
+        if self.underlying_model not in ["torch_net", "celltypist", "scmap"]:
+            raise ValueError(
+                "Invalid classifier_model. Supported values are: torch_net, celltipist, SCmap.")
+        
+
+        if self.underlying_model == "torch_net":
+
+            if model_architecture is None:
+                model_architecture = {
+                    "hidden_sizes": [128, 64, 64],
+                    "dropout_rates": [0.4, 0.3],
+                    "learning_rate": 0.0001
+                }
+                warnings.warn("No model_architecture specified; usando parámetros genéricos.", UserWarning )
 
 
-        if model_architecture is None:
-            
-            model_architecture:dict = {   
-                "hidden_sizes": [128,  64, 64],
-                "dropout_rates": [0.4, 0.3],
-                "learning_rate": 0.0001}
-            
-            warnings.warn("You did not configure the model architecture. A generic one will be used.", UserWarning)
+            self.hidden_sizes = model_architecture["hidden_sizes"]
+            self.dropout_rates = model_architecture["dropout_rates"]
+            self.learning_rate = model_architecture["learning_rate"]
 
-           
+        
+ 
         # DESIGN OF THE ANNOTATOR
-        hidden_sizes:list = model_architecture["hidden_sizes"]
-        dropout_rates:list = model_architecture["dropout_rates"]
-        learning_rate:list = model_architecture["learning_rate"]
+        
 
 
         if OOD_detector is None:
-            
-            OOD_detector:dict = {
+            OOD_detector = {
                 "pvalues": "marginal",
                 "alpha": 0.1,
                 "delta": 0.1,
-                "hidden_sizes": [ 556,  124],     
-                "dropout_rates": [ 0.3,  0.30], 
+                "hidden_sizes": [556, 124],
+                "dropout_rates": [0.3, 0.3],
                 "learning_rate": 0.001,
                 "batch_size": 64,
-                "n_epochs": 150}
-            
-            warnings.warn("You did not configure the OOD_detector. A generic one will be used.", UserWarning)
+                "n_epochs": 150
+            }
+            warnings.warn(
+                "No OOD_detector specified; usando parámetros por defecto.",
+                UserWarning
+            )
 
            
-        # DESIGN OF THE ANNOTATOR
+
+
+        # CONFIGURE OOD DETECTOR
+
+        pvalues = OOD_detector.get("pvalues", "marginal")
+        if "pvalues" not in OOD_detector:
+            warnings.warn("Clave 'pvalues' faltante en OOD_detector; usando 'marginal'.", UserWarning)
+
+        alpha_OOD = OOD_detector.get("alpha", 0.1)
+        if "alpha" not in OOD_detector:
+            warnings.warn("Clave 'alpha' faltante en OOD_detector; usando 0.1.", UserWarning)
+
+
+        delta_OOD = (
+            OOD_detector.get("delta", 0.1) if pvalues == "conditional" else 0
+            )
+        if pvalues == "conditional" and "delta" not in OOD_detector:
+            warnings.warn("Clave 'delta' faltante en OOD_detector; usando 0.1.", UserWarning)
+
 
         try:
-            pvalues:str = OOD_detector["pvalues"]
-        except KeyError:
-            warnings.warn("You did not configure -pvalues- in the OOD_detector. -marginal- will be used.", UserWarning)
-            pvalues:str = "marginal"
-
-        try:   
-            alpha_OOD:float = OOD_detector["alpha"]
-        except KeyError:
-            warnings.warn("You did not configure -alpha- in the OOD_detector. -0.1- will be used.", UserWarning)
-            alpha_OOD:float = 0.1
-
-        if pvalues == "conditional":
+            self.hidden_sizes_OOD = OOD_detector["hidden_sizes"]
+            self.dropout_rates_OOD = OOD_detector["dropout_rates"]
+            self.learning_rate_OOD = OOD_detector["learning_rate"]
+            self.batch_size_OOD = OOD_detector["batch_size"]
+            self.n_epochs_OOD = OOD_detector["n_epochs"]
+            if len(self.hidden_sizes_OOD) != len(self.dropout_rates_OOD):
+                raise ValueError( "hidden_sizes y dropout_rates must have the same lenght.")
             
-            try:   
-                delta_OOD:float = OOD_detector["delta"]
+        except KeyError as e:
+            raise ValueError(
+                "One of the following parameters the OOD detector is missing: "
+                f"{e.args[0]}"
+            )
 
-            except KeyError:
-                warnings.warn("You did not configure -delta- in the OOD_detector. -0.1- will be used.", UserWarning)
-                delta_OOD:float = 0.1
-        else:
-            delta_OOD:float = 0
-
-
-        try:
-
-            hidden_sizes_OOD:list = OOD_detector["hidden_sizes"]
-            dropout_rates_OOD:list = OOD_detector["dropout_rates"]
-            learning_rate_OOD:float = OOD_detector["learning_rate"]
-            batch_size_OOD:int = OOD_detector["batch_size"]
-            n_epochs_OOD:int = OOD_detector["n_epochs"]
-
-            if len(hidden_sizes_OOD) != len(dropout_rates_OOD):
-                raise ValueError("The hidden_sizes and dropout_rates must have the same length.")
-
-        except KeyError:
-            raise ValueError("One of the following parameters the OOD detector is missing:\n hidden_sizes,\n dropout_rates,\n learning_rate,\n batch_size,\n n_epochs.")
-
-
-
-        # Store model configuration:
-        self.reference_path = reference_path
-
-        self.hidden_sizes = hidden_sizes
-        self.dropout_rates = dropout_rates
-        self.learning_rate = learning_rate
+  
 
         self.pvalues = pvalues  
         self.alpha_OOD = alpha_OOD
         self.delta_OOD = delta_OOD
-        self.hidden_sizes_OOD = hidden_sizes_OOD
-        self.dropout_rates_OOD = dropout_rates_OOD
-        self.learning_rate_OOD = learning_rate_OOD
-        self.batch_size_OOD = batch_size_OOD
-        self.n_epochs_OOD = n_epochs_OOD
 
         self.cell_types_excluded_treshold = cell_types_excluded_treshold 
-
         
+
+
+
         self._is_configured = True
 
     
@@ -360,15 +359,19 @@ class ConformalSCAnnotator:
             raise ValueError("Query data (adata_query) is not loaded. Please load the data before fitting.")
 
 
-         # Initialize classifier with training parameters
-        classifier = SingleCellClassifier(epoch=epoch, batch_size=batch_size, do_test=self.do_test, random_state=self.random_state) 
+        # Initialize classifier with training parameters
+        classifier = SingleCellClassifier(classifier_model=self.underlying_model,
+                                          epoch=epoch,
+                                          batch_size=batch_size,
+                                          do_test=self.do_test,
+                                          random_state=self.random_state) 
 
         # Load rhe reference data
         self.adata_query  = classifier.load_data(self.reference_path,
                                                         self.adata_query,
                                                         self.cell_type_level,
                                                         self.cell_types_excluded_treshold,
-                                                        batch_correction=self.integration_method,
+                                                        obsm_layer=self.obsm_layer,
                                                         gene_column_name = self.var_query_gene_column_name)
 
         # Fit anomaly detector
@@ -383,8 +386,15 @@ class ConformalSCAnnotator:
         
 
         # Train classifier
-        classifier.define_architecture(self.hidden_sizes, self.dropout_rates)
-        classifier.fit(lr=self.learning_rate)
+        if self.underlying_model == "torch_net":
+            classifier.define_architecture(self.hidden_sizes, self.dropout_rates)
+            classifier.fit_network(lr=self.learning_rate)
+        
+        elif self.underlying_model == "celltypist":
+            classifier.fit_celltypist(self.cell_type_level)
+        
+        elif self.underlying_model == "scmap":
+            classifier.fit_scmap(self.cell_type_level)
 
 
         # Calibrate classifier
@@ -392,6 +402,7 @@ class ConformalSCAnnotator:
                              alpha = self.alpha,
                              predictors = self.CP_predictor)
         
+
         self.test_results = None   
         if self.do_test:
             classifier.test()
@@ -406,21 +417,20 @@ class ConformalSCAnnotator:
 
 
     def _annotate(self, classifier):
-
         
-
+        
+        if self.underlying_model == "celltypist": 
+            sc.pp.normalize_total(self.adata_query, target_sum=1e4)
+            sc.pp.log1p(self.adata_query)
+        
         # Perform prediction
-        if self.integration_method == None:
-
+        if self.obsm_layer == None:
             classifier.predict(self.adata_query.X.toarray().astype(np.float32))
-
-        if self.integration_method =='X_pca_harmony':
-            classifier.predict(self.adata_query.obsm['X_pca_harmony'].astype(np.float32))
         
-        if self.integration_method =='X_pca':
-            classifier.predict(self.adata_query.obsm['X_pca'].astype(np.float32))
+        else:   
+            classifier.predict(self.adata_query.obsm[self.obsm_layer].astype(np.float32))
 
-
+        
         # Extract predictions and prediction sets
         _annotated_cells = classifier.predicted_labels
         _annotated_cells_sets = classifier.prediction_sets
@@ -444,13 +454,32 @@ class ConformalSCAnnotator:
     
 
 
-    def annotate(self, batch_correction="combat"):
+    def annotate(self, obsm_layer=None):
+
+        self.obsm_layer = obsm_layer
 
         """
-        Annotate the dataset using the trained model.
+        Annotate the dataset.
         """
 
-        self.integration_method = batch_correction  
+        if obsm_layer== None:
+            self.obsm_layer = None 
+            print("Data stored in adata.X will be used for annotation")
+
+
+        else:
+            if self.obsm_layer not in self.adata_query.obsm.keys():
+                raise ValueError(f"The provided obsm_layer '{self.obsm_layer}' is not present in the AnnData object.")
+            
+            if self.underlying_model == "celltypist":
+                raise ValueError("celltypist only supports adata.X for annotation. Please set obsm_layer to None.")
+            if self.underlying_model == "scmap":
+                raise ValueError("scmap only supports adata.X for annotation. Please set obsm_layer to None.")
+
+            self.obsm_layer = obsm_layer
+            print(f"Data stored in adata.obsm[{self.obsm_layer}] will be used for annotation")
+
+
 
         # Check if the model is already trained and calibrated
         if self._is_fitted == False:
@@ -458,8 +487,11 @@ class ConformalSCAnnotator:
             self.classifier_model = self.fit(epoch=self.epoch, batch_size=self.batch_size)
 
 
+
         print("Starting annotation process...")
+
         self._annotate(self.classifier_model)
+
         print("Annotation process completed.")
 
         # Annotations are now available in `_annotated_cells` and `_annotated_cells_sets`

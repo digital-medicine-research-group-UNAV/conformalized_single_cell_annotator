@@ -33,170 +33,193 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import OneCycleLR
+from torch.utils.data import DataLoader, TensorDataset, random_split
 
 
 
 class AEOutlierDetector(nn.Module):
-    
     """
-    An autoencoder-based outlier (or novelty) detection model.
-    Provides methods to train, calibrate a threshold, 
-    and score new samples based on reconstruction error.
+    sparse + denoising autoencoder with
+    - LayerNorm + weight normalization
+    - SiLU activations
+    - Contractive penalties
+    - AdamW optimizer + OneCycleLR
     """
+    def __init__(self, input_dim, network_architecture, device=None):
+        super().__init__()
 
-    def __init__(self, input_dim, network_architecture):
-        super(AEOutlierDetector, self).__init__()
+        # Input dimension
+        self._init_args = dict(
+            input_dim=input_dim,
+            network_architecture=network_architecture,
+            device=device
+        )
 
-        # Extract parameters from the architecture dictionary
-        hidden_sizes = network_architecture.get("hidden_sizes", [128, 64, 32, 16])
-        dropout_rates = network_architecture.get("dropout_rates", [0.4, 0.3, 0.4, 0.25])
-        self.lr = network_architecture.get("learning_rate", 0.0001)
-        self.batch_size = network_architecture.get("batch_size", 320)
-        self.n_epochs = network_architecture.get("n_epochs", 7)
-        self.early_stopping_patience = 7 #5
+        # Architecture parameters
+        hidden_sizes      = network_architecture.get("hidden_sizes", [128, 64, 32, 16])
+        dropout_rates     = network_architecture.get("dropout_rates", [0.4, 0.3, 0.4, 0.25])
+        self.lr           = network_architecture.get("learning_rate", 1e-4)
+        self.weight_decay = network_architecture.get("weight_decay", 1e-5)
+        self.batch_size   = network_architecture.get("batch_size", 320)
+        self.n_epochs     = network_architecture.get("n_epochs", 50)
+        self.patience     = network_architecture.get("patience", 5)
+        self.noise_level  = network_architecture.get("noise_level", 0.05)
+        self.lambda_sparse    = network_architecture.get("lambda_sparse", 1e-3)
+        self.lambda_contractive= network_architecture.get("lambda_contractive", 1e-4)
+        
+
+        # Device
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+
+        # Input normalization
+        self.input_norm = nn.LayerNorm(input_dim)
+
+        # Encoder
+        enc_layers = []
+        in_dim = input_dim
+        for h, d in zip(hidden_sizes, dropout_rates):
+            linear = nn.utils.weight_norm(nn.Linear(in_dim, h))
+            enc_layers += [linear, nn.LayerNorm(h), nn.SiLU(), nn.Dropout(d)]
+            in_dim = h
+        self.encoder = nn.Sequential(*enc_layers)
+
+        # Decoder (mirror)
+        dec_layers = []
+        for prev, d in zip(reversed(hidden_sizes[:-1]), reversed(dropout_rates[:-1])):
+            linear = nn.utils.weight_norm(nn.Linear(in_dim, prev))
+            dec_layers += [linear, nn.LayerNorm(prev), nn.SiLU(), nn.Dropout(d)]
+            in_dim = prev
+        dec_layers.append(nn.Linear(in_dim, input_dim))
+        self.decoder = nn.Sequential(*dec_layers)
+
+        # Fitting flag
         self._is_fitted = False
+        self.to(self.device)
 
-        # Build encoder dynamically based on hidden sizes and dropout rates
-        encoder_layers = []
-        for i in range(len(hidden_sizes)):
-            if i == 0:
-                encoder_layers.append(nn.Linear(input_dim, hidden_sizes[i]))
-            else:
-                encoder_layers.append(nn.Linear(hidden_sizes[i - 1], hidden_sizes[i]))
-            encoder_layers.append(nn.ReLU())
-            encoder_layers.append(nn.Dropout(dropout_rates[i]))
-
-        self.encoder = nn.Sequential(*encoder_layers)
-
-        # Build decoder (reversing encoder structure)
-        decoder_layers = []
-        rev_hidden_sizes = list(reversed(hidden_sizes))
-        for i in range(len(hidden_sizes) - 1, 0, -1):
-            decoder_layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i - 1]))
-            decoder_layers.append(nn.ReLU())
-            decoder_layers.append(nn.Dropout(dropout_rates[i - 1]))
-
-        decoder_layers.append(nn.Linear(hidden_sizes[0], input_dim))
-
-        self.decoder = nn.Sequential(*decoder_layers)
-
-        # Internal attributes
-        self.threshold_ = None
-        self._is_fitted = False
-
-    def forward(self, x):
-        latent = self.encoder(x)
-        reconstructed = self.decoder(latent)
-        return reconstructed
-    
-
+    def forward(self, x, noise=False):
+        if noise and self.noise_level > 0:
+            x = x + torch.randn_like(x) * self.noise_level
+        x_norm = self.input_norm(x)
+        z = self.encoder(x_norm)
+        x_hat = self.decoder(z)
+        return z, x_hat
+  
+    def _contractive_penalty(self, x, z):
+        eps = torch.randn_like(z)
+        
+        grad = torch.autograd.grad((z * eps).sum(), x, create_graph=True)[0]
+        return grad.pow(2).sum(dim=1).mean()
 
     def fit(self, X, validation_split=0.2):
-    
-        if not isinstance(X, torch.Tensor):
+        if not torch.is_tensor(X):
             X = torch.tensor(X, dtype=torch.float32)
-    
-        # Determine the sizes for training and validation
-        total_size = X.size(0)
-        val_size = int(total_size * validation_split)
-        train_size = total_size - val_size
-        
-        # Split the dataset
-        train_tensor, val_tensor = random_split(X, [train_size, val_size], generator=torch.Generator())
-        
-        # Create DataLoaders for training and validation
-        train_loader = DataLoader(train_tensor, batch_size=self.batch_size, shuffle=True)
-        val_loader = DataLoader(val_tensor, batch_size=self.batch_size, shuffle=False)
-        
-        
-        # Define Loss and Optimizer
-        criterion = nn.MSELoss()
-        optimizer = Adam(self.parameters(), lr=self.lr)
+        ds = TensorDataset(X)
+        n_val = int(len(ds) * validation_split)
+        train_ds, val_ds = random_split(ds, [len(ds) - n_val, n_val])
+        train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
+        val_loader = DataLoader(val_ds, batch_size=self.batch_size)
 
-        #  adaptive learning rate scheduler (monitor validation loss)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+        # Loss + optimizer + scheduler
+        recon_criterion = nn.SmoothL1Loss()
+        optimizer = AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        scheduler = OneCycleLR(
+            optimizer,
+            max_lr=self.lr,
+            steps_per_epoch=len(train_loader),
+            epochs=self.n_epochs
+        )
 
-        # Variables for early stopping
-        best_val_loss = float('inf')
+        best_val = float('inf')
         epochs_no_improve = 0
-        
-        self.train()  # set the module in training mode
+        self.train()
+
         for epoch in range(self.n_epochs):
-            total_train_loss = 0.0
-            
-            # Training phase
-            for batch in train_loader:
+            train_loss = 0.0
+            for (batch,) in train_loader:
+
+                batch = batch.to(self.device)
+                batch = batch.clone().detach().requires_grad_(True)
+
                 optimizer.zero_grad()
-                outputs = self.forward(batch[0])
-                loss = criterion(outputs, batch[0])
+                z, recon = self.forward(batch, noise=True)
+
+                # Reconstruction + sparse + contractive + orthogonal
+                loss_recon = recon_criterion(recon, batch)
+                loss_sparse = self.lambda_sparse * z.abs().mean()
+                loss_contract = self.lambda_contractive * self._contractive_penalty(batch, z)
+                
+                loss = loss_recon + loss_sparse + loss_contract 
                 loss.backward()
                 optimizer.step()
-                total_train_loss += loss.item()
-            
-            avg_train_loss = total_train_loss / len(train_loader)
+                scheduler.step()
+                train_loss += loss.item()
+            avg_train = train_loss / len(train_loader)
 
-            # Validation phase
-            self.eval()  # set the module in evaluation mode
+            # Validation
+            self.eval()
+            val_loss = 0.0
             with torch.no_grad():
-                total_val_loss = 0.0
-                for val_batch in val_loader:
-                    val_outputs = self.forward(val_batch[0])
-                    val_loss = criterion(val_outputs, val_batch[0])
-                    total_val_loss += val_loss.item()
-                
-                avg_val_loss = total_val_loss / len(val_loader)
+                for (batch,) in val_loader:
+                    batch = batch.to(self.device)
+                    _, recon = self.forward(batch, noise=False)
+                    val_loss += recon_criterion(recon, batch).item()
+            avg_val = val_loss / len(val_loader)
 
-            # Step the scheduler based on the validation loss
-            scheduler.step(avg_val_loss)
+            print(f"Epoch {epoch + 1}, Training Loss: {avg_train:.4f}, Validation Loss: {avg_val:.4f}")
 
-            #print(f"Epoch {epoch + 1}, Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}")
-
-            # Early stopping check
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
+            # Early stopping
+            if avg_val < best_val:
+                best_val = avg_val
                 epochs_no_improve = 0
             else:
                 epochs_no_improve += 1
-            
-            if epochs_no_improve >= self.early_stopping_patience:
-                #print(f"Epoch {epoch + 1}, Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}")
-                print("Early stopping triggered!")
-                self._is_fitted = True
+            if epochs_no_improve >= self.patience:
+                print(f"Early stopping at epoch {epoch+1}")
                 break
-
-        print(f"Epoch {epoch + 1}, Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}")
-
+            self.train()
 
         self._is_fitted = True
-    
-    
-
+        print(f"Finished training: train_loss={avg_train:.4f}, val_loss={avg_val:.4f}")
 
     def score_samples(self, X):
-
-        if not isinstance(X, torch.Tensor):
+        if not self._is_fitted:
+            raise RuntimeError("Model must be fitted before scoring.")
+        if not torch.is_tensor(X):
             X = torch.tensor(X, dtype=torch.float32)
-        
+        X = X.to(self.device)
         self.eval()
         with torch.no_grad():
-            reconstructed = self.forward(X)
-            mse_per_sample = F.mse_loss(reconstructed, X, reduction='none')
-            scores =  mse_per_sample.mean(dim=1)
-        return scores
-    
-    def is_fitted(self):
+            _, recon = self.forward(X, noise=False)
+            mse = F.mse_loss(recon, X, reduction='none')
+            scores = mse.mean(dim=1)
+        return scores.cpu()
 
+    def predict(self, X, threshold):
+        scores = self.score_samples(X)
+        return scores > threshold
+
+    def is_fitted(self):
         return self._is_fitted
-    
 
 
 
 
 class Annomaly_detector():
     def __init__(self,pvalues, oc_model, delta=0.05):
+
+        ModelClass   = oc_model.__class__
+        init_kwargs  = getattr(oc_model, "_init_args", {})
+        self.oc_model = ModelClass(**init_kwargs)
+
+        self.oc_model.load_state_dict(oc_model.state_dict())
         
         self.pvalues = pvalues
-        self.oc_model = copy.deepcopy(oc_model) ## One-class underlying model
+        
         self.delta = delta
         self.marginal_pvalues = None
         self.conditional_pvalues = None
@@ -240,7 +263,7 @@ class Annomaly_detector():
 
         
 
-        if self.pvalues == "confitional":
+        if self.pvalues == "conditional":
             if self.fs_correction is None:
                 self.fs_correction = estimate_fs_correction(self.delta,self.n_cal)
             self.conditional_pvalues = betainv_mc(self.marginal_pvalues, self.n_cal, self.delta, fs_correction=self.fs_correction)
