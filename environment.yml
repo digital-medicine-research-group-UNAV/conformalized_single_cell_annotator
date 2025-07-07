@@ -1,27 +1,41 @@
 
 
 
-# Name for the Conda environment
 name: annotator-env
 
-# Channels for downloading packages, in order of priority
-# pytorch channel is best for pytorch, conda-forge is a community staple
 channels:
   - pytorch
+  - nvidia
   - conda-forge
-  - defaults
 
-# List of dependencies
 dependencies:
-  - python=3.12.10
-  - scipy=1.15.2
-  - numpy=1.26.4
-  - pandas=2.2.3
-  - scikit-learn=1.5.2
-  - scanpy=1.11.1
-  - transformers=4.51.3
+  # 1. Downgraded Python to a widely compatible and stable version
+  - python=3.11
 
+  # 2. Updated PyTorch stack for compatibility with Python 3.11 and each other.
+  #    Letting conda handle the exact build makes it work for both CPU and GPU.
+  - pytorch=2.3.1
+  - torchvision=0.18.1
+  - torchaudio=2.3.1
+  - pytorch-cuda=11.8  # This will pull the right GPU build if a GPU is available.
+
+  # 3. Core scientific stack (versions are generally fine, no changes needed)
+  - scipy=1.11.4       # Adjusted to a common version for Python 3.11
+  - numpy=1.26.4
+  - pandas=2.2.2
+  - scikit-learn=1.5.0
+  - matplotlib-base
+  - pillow
+  - rapidfuzz
+  - torchsort
+
+  # 4. Domain-specific packages (scanpy and transformers are fine)
+  - scanpy=1.10.1
+  - transformers
+
+  # 5. pip-only extras (check for compatibility with PyTorch 2.3)
+  - pip
   - pip:
-    - torch-geometric==2.6.1
+    - torch-geometric  # It's often better to let pip find the compatible version
     - torchcp==1.0.2
     - celltypist==1.6.3
