@@ -12,122 +12,145 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 
 ## Requirements
 
-Python 3.7 +
-Scikit-learnt 1.2.2+
-Numpy 
-Pytorch
-torchvision
-Scanpy 1.10.4  (and its requirements)
-TorchCP  1.0.1 (and its requirements)
+The requirements are provided in the .txt file ...
 
 
 
 ## Quickstart
 Below is an integrated guide to getting started with the Conformalized Single Cell Annotator and understanding its outputs.
 
-
-
-
-
 ```python
 import numpy as np
 import pandas as pd
 import scanpy as sc
 
-# Import the ConformalSCAnnotator from wherever it lives in your package
+# Import the ConformalSCAnnotator class 
 from conformal_sc_annotator import ConformalSCAnnotator
 
-# 1. Load your query data using scanpy (.h5ad files required)
-query_data_path = 'path_to_query/your_query.h5ad'
-adata_query = sc.read_h5ad(query_data_path)
+# 1. Load reference and query datasets (must be in .h5ad format)
+reference_adata_path = 'path_to_query/your_reference.h5ad'
+adata_reference = sc.read_h5ad(reference_adata_path)
 
-# 2. We need a .var column that contains the gene names (if not created).
-## Sometimes this information is on index column adata_query.var_names, but we explicity in a new column if not exist .
-## In this case, we suppose that the column is already created and named: "features".
+query_adata_path = 'path_to_query/your_query.h5ad'
+adata_query = sc.read_h5ad(query_adata_path)
+
+# 2. Ensure a .var column with gene names exists
+# Often gene names are in adata.var_names. If not, explicitly create a new column.
+# In this example, we assume that the column already exists and is named "features".
 
 gene_names_column = "features" 
+underlying_model = "torch_net" # Choose between "torch_net", "celltypist" , "scmap"
 
 # 3. Initialize the annotator
-annotator = ConformalSCAnnotator(
-    adata_query,
-    var_query_gene_column_name = gene_names_column 
-)
-
-
+annotator = ConformalSCAnnotator(adata_query,
+                                var_query_gene_column_name = gene_names_column,
+                                underlying_model = underlying_model)    
 
 
 ```
-Now we need to define the arquitecture of the underlying classifier.
+If "torch_net" was selected, we need to define the arquitecture of the underlying classifier.
 
 ```python
 
 # Define que network architecture   
 network_architecture:dict = {   
-            "hidden_sizes": [128, 128, 64, 64],
-            "dropout_rates": [0.4, 0.3, 0.4, 0.25],
-            "learning_rate": 0.0001}
-
-```
-And the parameters of out out-of-distribution detector.
-
-```python
-
-OOD_detector_config = { "pvalues": "marginal",             # choose between marginal or conditional. Def: "marginal"
-                        "alpha": 0.1,                      # Significance level for the hyoothesis test
-                        "delta": 0.1,                      # only for conditional pvalues
-                        "hidden_sizes": [ 556,  124],      # AE hidden sizes and topology of the network
-                        "dropout_rates": [ 0.3,  0.30],
-                        "learning_rate": 0.0001,
-                        "batch_size": 42,
-                        "n_epochs": 200}
+                            "hidden_sizes": [ 72,64,32, 32],
+                            "dropout_rates": [ 0.15, 0.15, 0.15,  0.15],
+                            "learning_rate": 1e-4}
 
 ```
 
-Let´s load our reference and configurate our tool.
+The next step is to define the parameters of the out-of-distribution detector. If `alpha` is set to `None`, $\alpha_o$ will be automatically estimated.
+
 
 ```python
 
-reference_data_path = "path_to_reference/your_reference.h5ad"     # Path to the reference data
+OOD_detector_config = {
+                        "alpha": None,                              # Significance level for the hyoothesis test. 
+                        "delta": 0.1,                               # Only for conditional pvalues
+                        "hidden_sizes":  [50, 48, 32, 24],          # AE hidden sizes and topology of the network
+                        "dropout_rates": [0.15, 0.15, 0.15, 0.15],  
+                        "learning_rate": 1e-4,
+                        "batch_size":    72,
+                        "n_epochs":      850,
+                        "patience":      9,
+                        "noise_level":   0.1,
+                        "lambda_sparse": 1e-3}
 
+
+```
+
+Now it's time to configure the model and the conformal predictor. It is possible to fine-tune various components such as the architecture or the conformal predictor.
+
+```python
 
 # 5. Configure model and conformal predictor
-annotator.configure(reference_path = reference_data_path,        # Path to the reference data in format .h5ad
-                    model_architecture = network_architecture,   # Optional, if not provided, default values will be used
-                    OOD_detector = OOD_detector_config,          # Optional, if not provided, default values will be used
-                    CP_predictor = "standard",                   # standard, mondrian or cluster
-                    cell_names_column = "celltype",       # class name for fitting the model.  cell_type or celltype_level3 
-                    cell_types_excluded_treshold = 45,           # Exclude cell types with less than 50 cells
-                    test =  True,                                # Perform internal test of the model
-                    alpha = [0.01, 0.05, 0.1],                   # Confidence of the predictions (can be a single element)
-                    non_conformity_function = APS(),             # NC-function provided by or compatible with torchCP   (APS, RAPS, THR) 
-                    epoch=200,
-                    batch_size = 42,
-                    random_state = None) 
+
+from torchcp.classification.score import  APS
+
+do_test = True          # If True, a small fraction of the reference set is reserved as an independent test set.
+
+taxonomy = "standard"   # Choose from: "standard", "mondrian", or "cluster"
+cells_OOD = 50          # Exclude cell types with fewer than 50 cells (Optional, it could be an int or a list of cell types)
+nc_function = APS()     # Non-conformity function compatible with torchCP
+
+annotator.configure(reference_path = adata_ref,                  # Path or AnnData object (.h5ad) for the reference dataset
+                    model_architecture = network_architecture,   # Optional: user-defined model; otherwise defaults are used
+                    OOD_detector = OOD_detector_config,          # Optional: specify custom OOD detector config
+                    CP_predictor = taxonomy,                     
+                    cell_names_column = ref_column,              # Column name in reference data with class labels 
+                    cell_types_excluded_treshold = cells_OOD,    
+                    test =  do_test,                             
+                    alpha = [0.01, 0.05, 0.1],                   # List of confidence levels for prediction sets. Can be a single float too; e.g. alpha = 0.1
+                    non_conformity_function = nc_function,       # NC-function provided by or compatible with torchCP    
+                    epoch = 1000,                                # Only applicable if using "torch_net" as underlying model
+                    batch_size = 72,                             # Only applicable if using "torch_net" as underlying model
+                    random_state = None)                         # Random seed for reproducibility
 
 ```
-Finally, we only need to annotate the query dataset
+Once the tool has been configured, the final step is to annotate the query dataset. Here, we specify which parts of the `AnnData` object should be used for inference and out-of-distribution detection.  
 
 ```python
-# 6. Annotate your data (with batch correction)
-# If batch corrected data is stored at .obsm, it can be used .
-annotator.annotate(batch_correction="X_pca_harmony")  # batch_correction: None, "X_pca_harmony" or "'X_pca"
+# 6. Annotate the query adata 
+
+obsm_layer_ = "obsm"         # Choose from: None (adata.X), "obsm" (adata.obsm), or "layer" (adata.layers)
+layer_ = None                # Required only if obsm_layer_ is "layer" — provide the layer name to use
+obsm_ = "X_pca_harmony"      # Required if obsm_layer_ is "obsm" — name of the embedding in adata.obsm
+
+obsm_OOD_ = "X_pca_harmony"  # The embedding used by the OOD detector (typically the same as obsm_). If None, adata.X will be used.
+
+
+annotator.annotate(obsm_layer = obsm_layer_,
+                    obsm = obsm_,
+                    layer = layer_,
+                    obsm_OOD = obsm_OOD_)
 ```
 
+After running the annotation, the results are stored in the query `AnnData` and the `annotator` object. You can extract predictions, test metrics, and additional metadata as follows:
+
 ```python
-# 7. View predicted annotations
-annotated_cells = annotator.adata_query.obs
+# 7. Access information
+
+# Retrieve the annotated observations from the query dataset
+annotated_cells = annotator.adata_query.obs                     
 print("\nPredicted annotations sets: \n" , annotated_cells)
 
-# And the results of the internal test:
-
+# Internal test results (if do_test = True):
 test_results = annotator.test_results
 
+# Unique labels from the reference data
+unique_labels = annotator.unique_labels
+
+# Automatically determined alpha (if alpha=None in OOD_detector_config)
+alpha_OOD = annotator.alpha_OOD
+
 ```
+Finally, you can extract the predicted labels and corresponding conformal prediction sets into a traditional pandas DataFrame for inspection, export, or downstream analysis.
 
 ```python
 
-# 8. We can get the results from the adata object and store in a classical df:
-# predicted labels sntands for the predictions of the underlying model without conformal prediction.
+# 8. Extract annotation results into a pandas DataFrame
+
 
 results = []
 for pred,cp_pred_001,cp_pred_005, cp_pred_010 in zip(
@@ -135,8 +158,7 @@ for pred,cp_pred_001,cp_pred_005, cp_pred_010 in zip(
         annotator.adata_query.obs["prediction_sets_0.01"],
         annotator.adata_query.obs["prediction_sets_0.05"],
         annotator.adata_query.obs["prediction_sets_0.1"] ):
-        
-        
+         
     #print(f"Predicted: {pred} - CP 0.01: {cp_pred_001} - CP 0.05: {cp_pred_005} - CP 0.10: {cp_pred_010}")
         
     results.append({
