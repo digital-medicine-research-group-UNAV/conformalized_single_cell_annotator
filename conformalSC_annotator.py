@@ -11,7 +11,6 @@ import pandas as pd
 import scanpy as sc
 import scanpy.external as sce
 import anndata as ad
-from rapidfuzz import fuzz, process
 
 from conformalized_single_cell_annotator.conformalSC import SingleCellClassifier
 from torchcp.classification.score import THR, RAPS, APS

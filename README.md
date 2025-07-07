@@ -10,14 +10,48 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 
 
 
-## Requirements
 
-The requirements are provided in the .txt file ...
+## Setup and Installation
+
+To ensure full reproducibility, we provide a Conda environment file (`environment.yml`) that specifies all required dependencies ( [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)). You can use either Mamba or Conda to create the environment.
+
+**We strongly recommend using Mamba**, as it is significantly faster and more efficient at resolving dependencies.
+
+
+### Option 1: Using Mamba (Recommended)
+
+1.  **Install Mamba:**
+    If you don't have Mamba installed, you can add it to your base Conda environment with a single command:
+    ```bash
+    conda install -n base -c conda-forge mamba
+    ```
+
+2.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/your-repository.git
+    cd your-repository
+    ```
+
+3.  **Create the environment with Mamba:**
+    This command uses the `environment.yml` file to create a new environment named `annotator-env`.
+    ```bash
+    mamba env create -f environment.yml
+    ```
+
+### Option 2: Using Conda
+
+If you prefer not to use Mamba, you can use the standard Conda command. Please note this may be considerably slower.
+
+  **Create the environment with Conda:**
+    ```bash
+    conda env create -f environment.yml
+    ```
+
 
 
 
 ## Quickstart
-Below is an integrated guide to getting started with the Conformalized Single Cell Annotator and understanding its outputs.
+Below is an integrated guide to getting started with the Conformalized Single Cell Annotator (`conformal_sc_annotator`) and understanding its outputs.
 
 ```python
 import numpy as np

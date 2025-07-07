@@ -9,7 +9,7 @@ import seaborn as sns
 import random
 import copy
 import sys
-from tqdm.autonotebook import tqdm
+
 
 import matplotlib.pyplot as plt
 

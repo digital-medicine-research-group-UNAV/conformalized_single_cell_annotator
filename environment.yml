@@ -1,0 +1,27 @@
+
+
+
+# Name for the Conda environment
+name: annotator-env
+
+# Channels for downloading packages, in order of priority
+# pytorch channel is best for pytorch, conda-forge is a community staple
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+
+# List of dependencies
+dependencies:
+  - python=3.12.10
+  - scipy=1.15.2
+  - numpy=1.26.4
+  - pandas=2.2.3
+  - scikit-learn=1.5.2
+  - scanpy=1.11.1
+  - transformers=4.51.3
+
+  - pip:
+    - torch-geometric==2.6.1
+    - torchcp==1.0.2
+    - celltypist==1.6.3
