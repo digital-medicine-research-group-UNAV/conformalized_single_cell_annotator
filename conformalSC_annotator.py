@@ -13,9 +13,11 @@ import scanpy.external as sce
 import anndata as ad
 from rapidfuzz import fuzz, process
 
-from conformalSC import SingleCellClassifier
+from conformalized_single_cell_annotator.conformalSC import SingleCellClassifier
 from torchcp.classification.score import THR, RAPS, APS
-
+import os
+cwd = os.getcwd()
+print("Current kernel CWD:", cwd)
 
 import warnings
 warnings.filterwarnings("ignore")  # Ignore all warnings
@@ -185,7 +187,7 @@ class ConformalSCAnnotator:
 
 
     def configure(self,
-                    reference_path: str = None,
+                    reference_path: Union[str, ad.AnnData] = None,
                     model_architecture: Optional[dict] = None,
                     OOD_detector: Optional[dict] = None,
                     CP_predictor="mondrian",
@@ -220,10 +222,10 @@ class ConformalSCAnnotator:
         
 
 
-        if isinstance(reference_path, str):
+        if isinstance(reference_path, Union[str, ad.AnnData]):
             self.reference_path = reference_path
         else:
-            raise ValueError("Please provide a valid path to the reference data.")
+            raise ValueError("Please provide a valid path to the reference data or an adata object.")
         
         # Unificar alpha en lista
         self.alpha = [alpha] if isinstance(alpha, float) else alpha
@@ -287,10 +289,10 @@ class ConformalSCAnnotator:
         if "pvalues" not in OOD_detector:
             warnings.warn("Clave 'pvalues' faltante en OOD_detector; usando 'marginal'.", UserWarning)
 
-        alpha_OOD = OOD_detector.get("alpha", 0.1)
+        alpha_OOD = OOD_detector.get("alpha", None)
         if "alpha" not in OOD_detector:
-            warnings.warn("Clave 'alpha' faltante en OOD_detector; usando 0.1.", UserWarning)
-
+            warnings.warn("'alpha' was not defined in OOD_detector; using None instead and do_test = True.", UserWarning)
+            self.do_test = True
 
         delta_OOD = (
             OOD_detector.get("delta", 0.1) if pvalues == "conditional" else 0
@@ -371,7 +373,8 @@ class ConformalSCAnnotator:
                                                         self.adata_query,
                                                         self.cell_type_level,
                                                         self.cell_types_excluded_treshold,
-                                                        obsm_layer=self.obsm_layer,
+                                                        obsm=self.obsm,
+                                                        layer=self.layer,
                                                         gene_column_name = self.var_query_gene_column_name)
 
         # Fit anomaly detector
@@ -382,7 +385,8 @@ class ConformalSCAnnotator:
                                     dropout_rates_OOD=self.dropout_rates_OOD,
                                     learning_rate_OOD=self.learning_rate_OOD,
                                     batch_size_OOD=self.batch_size_OOD,
-                                    n_epochs_OOD=self.n_epochs_OOD)
+                                    n_epochs_OOD=self.n_epochs_OOD,
+                                    obsm_OOD=self.obsm_OOD)
         
 
         # Train classifier
@@ -419,16 +423,36 @@ class ConformalSCAnnotator:
     def _annotate(self, classifier):
         
         
-        if self.underlying_model == "celltypist": 
-            sc.pp.normalize_total(self.adata_query, target_sum=1e4)
-            sc.pp.log1p(self.adata_query)
+        if self.underlying_model != "torch_net": 
+            if self.layer is None:
+                sc.pp.normalize_total(self.adata_query, target_sum=1e4)
+                sc.pp.log1p(self.adata_query)
+            else:
+                sc.pp.normalize_total(self.adata_query, target_sum=1e4, layer=self.layer)
+                sc.pp.log1p(self.adata_query, layer=self.layer)
+
+
+        if self.obsm_OOD is not None:
+            query_data_OOD =  self.adata_query.obsm[self.obsm_OOD].astype(np.float32)
+        else:
+            query_data_OOD = None
         
         # Perform prediction
         if self.obsm_layer == None:
-            classifier.predict(self.adata_query.X.toarray().astype(np.float32))
+
+            if isinstance(self.adata_query.X, np.ndarray):
+                classifier.predict(self.adata_query.X.astype(np.float32), query_data_OOD)
+            else:
+                classifier.predict(self.adata_query.X.toarray().astype(np.float32), query_data_OOD)
         
-        else:   
-            classifier.predict(self.adata_query.obsm[self.obsm_layer].astype(np.float32))
+        else:  
+            if self.obsm is not None and self.obsm_layer == "obsm":
+
+                classifier.predict(self.adata_query.obsm[self.obsm].astype(np.float32), query_data_OOD)
+            
+            elif self.layer is not None and self.obsm_layer == "layer":
+                
+                classifier.predict(self.adata_query.layers[self.layer].astype(np.float32), query_data_OOD )
 
         
         # Extract predictions and prediction sets
@@ -437,10 +461,21 @@ class ConformalSCAnnotator:
         _annotated_cells_scores = classifier.prediction_scores
         self._model_labels = classifier.unique_labels 
         
+        # Extract OOD results if ground truth available:
+        _accuracy_OOD = classifier.accuracy_OOD
+        _precision_OOD = classifier.precision_OOD
+        _recall_OOD = classifier.recall_OOD
+        _auroc_OOD = classifier.auroc_OOD
+        
+        self.OOD_performance_scores = { "accuracy": _accuracy_OOD,
+                                        "precision": _precision_OOD,
+                                        "recall": _recall_OOD,
+                                        "auroc": _auroc_OOD}
      
         
         self.unique_labels = classifier.unique_labels
         self.adata_query.labels_encoded = classifier.labels_encoded
+        self.alpha_OOD = classifier.alpha_OOD
         
         
         # Update observation metadata with predictions
@@ -454,30 +489,59 @@ class ConformalSCAnnotator:
     
 
 
-    def annotate(self, obsm_layer=None):
-
-        self.obsm_layer = obsm_layer
+    def annotate(self, obsm_layer=None, obsm = None, layer=None, obsm_OOD = None):
 
         """
         Annotate the dataset.
         """
 
-        if obsm_layer== None:
-            self.obsm_layer = None 
-            print("Data stored in adata.X will be used for annotation")
+        self.obsm_OOD = obsm_OOD
 
+        if obsm_layer is not None:
+
+            if obsm_layer == "obsm":
+                if obsm is None:
+                    raise ValueError("Please provide obsm name in obsm=")
+                else:
+                    self.obsm_layer = obsm_layer
+                    self.obsm = obsm
+                    self.layer = None
+
+            if obsm_layer == "layer":
+                if layer is None:
+                    raise ValueError("Please provide layer name in layer=")
+                else:
+                    self.obsm_layer = obsm_layer
+                    self.layer = layer
+                    self.obsm = None
+                
+            if obsm_layer not in ["obsm", "layer"]:
+                raise ValueError("obsm_layer must be 'obsm' or 'layer' or None(default).")
+            
+            print("Using obsm_layer: ", self.obsm_layer, " for annotation.")
 
         else:
-            if self.obsm_layer not in self.adata_query.obsm.keys():
-                raise ValueError(f"The provided obsm_layer '{self.obsm_layer}' is not present in the AnnData object.")
-            
-            if self.underlying_model == "celltypist":
-                raise ValueError("celltypist only supports adata.X for annotation. Please set obsm_layer to None.")
-            if self.underlying_model == "scmap":
-                raise ValueError("scmap only supports adata.X for annotation. Please set obsm_layer to None.")
+            obsm_layer = None
+            self.obsm_layer = None 
+            print("obsm_layer is set to None. Data stored in adata.X will be used for annotation.")
 
-            self.obsm_layer = obsm_layer
-            print(f"Data stored in adata.obsm[{self.obsm_layer}] will be used for annotation")
+
+        
+        if self.obsm is not None and self.obsm not in self.adata_query.obsm.keys():
+            raise ValueError(f"The provided obsm '{self.obsm}' is not present in the query AnnData object.")
+
+        if self.layer is not None and self.layer not in self.adata_query.layers.keys():
+            raise ValueError(f"The provided layer '{self.layer}' is not present in the query AnnData object.")
+        
+        if self.obsm_OOD is not None and self.obsm_OOD not in self.adata_query.obsm.keys():
+            raise ValueError(f"The provided obsm_OOD '{self.obsm_OOD}' is not present in the query AnnData object.")
+        
+
+        if self.underlying_model == "celltypist":
+            warnings.warn("Provide raw data for annotation. ",
+                            UserWarning)
+        
+
 
 
 

@@ -144,12 +144,24 @@ class ScmapWrapper(nn.Module):
         return logits_df
         
 
-    def train_model(self, adata_ref, label_key):
-       
+    def train_model(self, adata_ref, label_key, layer=None, obsm=None):
+        
         if not self.training:
             raise RuntimeError("CellTypist model should be trained in train mode.")
         
-        self.adata_ref = adata_ref
+        self.adata_ref = adata_ref.copy()
+        if layer is not None:
+            self.adata_ref.X = self.adata_ref.layers[layer].copy()
+            
+
+        #if obsm is not None:
+        #    self.adata_ref.X = self.adata_ref.obsm[obsm].copy()
+        #    self.gene_names = adata_ref.var_names
+
+        #if layer is None and obsm is None:
+        #    self.gene_names = adata_ref.var_names
+    
+        
         self.gene_names = adata_ref.var_names
         self.column_to_predict = label_key
         
@@ -236,14 +248,21 @@ class CellTypistWrapper(nn.Module):
         self.cal_adata_genes =  pd.DataFrame(index=cal_adata_genes) 
 
 
-    def train_model(self, adata_ref, label_key):
+    def train_model(self, adata_ref, label_key, layer):
        
         if not self.training:
             raise RuntimeError("CellTypist model should be trained in train mode.")
         
-        #UserWarning(
-        #    "check_expression is not activated. Check that your adata.X fullfils the CellTypist pre-requisites. ")
-        
+        if layer is not None:
+            raw_counts = adata_ref.layers[layer].copy()
+            adata_raw = ad.AnnData(
+                X=raw_counts,
+                obs=adata_ref.obs.copy(),
+                var=adata_ref.var.copy()
+            )
+            adata_ref.raw = adata_raw
+            
+
         self.ct = train(
             adata_ref,
             labels=label_key,
@@ -258,6 +277,21 @@ class CellTypistWrapper(nn.Module):
         Get raw per-cell probabilities [N_cells × N_types].
         """
 
+        nan_mask = torch.isnan(X)
+        # 2. Check if there are any NaNs at all
+        if nan_mask.any():
+            # 3. Find which rows contain at least one NaN
+            rows_with_nans = nan_mask.any(dim=1).nonzero(as_tuple=False).squeeze()
+            print(f"Found NaNs in {rows_with_nans.numel()} rows: {rows_with_nans.tolist()}")
+
+            # 4. (Optional) For each such row, list which columns are NaN
+            for r in rows_with_nans.tolist():
+                cols = nan_mask[r].nonzero(as_tuple=False).squeeze()
+                print(f" Row {r} has NaNs in columns: {cols.tolist()}")
+        else:
+            print("No NaNs found in X.")
+
+
         # Move to CPU NumPy for CellTypist
         X_np = X.detach().cpu().numpy()
 
@@ -267,6 +301,7 @@ class CellTypistWrapper(nn.Module):
         #df = pd.DataFrame(X_np, columns=self.ct.features)
         with open(os.devnull, 'w') as fnull:
             with redirect_stdout(fnull), redirect_stderr(fnull):
+
                 ann = annotate(
                     adata_cal,
                     model=self.ct,

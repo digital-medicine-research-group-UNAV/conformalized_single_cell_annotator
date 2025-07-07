@@ -3,15 +3,15 @@
 
 # Import necessary libraries
 
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import OneHotEncoder, LabelEncoder
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
-
+import anndata as ad
 import scanpy as sc
 import torch
 import torch.nn as nn
@@ -19,8 +19,7 @@ import torch.optim as optim
 from sklearn.utils.class_weight import compute_class_weight
 import scanpy.external as sce
 
-from utils import CellTypistWrapper
-from utils import ScmapWrapper
+from conformalized_single_cell_annotator.utils import CellTypistWrapper, ScmapWrapper
 
 
 from typing import Union, List, Optional
@@ -35,10 +34,11 @@ from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor,
 from torchcp.classification.utils.metrics import Metrics
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from annomaly_detector import Annomaly_detector, AEOutlierDetector
+from conformalized_single_cell_annotator.annomaly_detector import Annomaly_detector, AEOutlierDetector
 
-
-
+import os
+cwd = os.getcwd()
+print("Current kernel CWD:", cwd)
 
 
 # Neural Network using pytorch
@@ -99,7 +99,7 @@ class SingleCellClassifier:
         self.do_test = do_test
         self.random_state = random_state
 
-        self.alpha_OOD = 0.1
+        self.alpha_OOD = None
         self.delta_OOD = 0.1
 
         self.conformal_prediction = False
@@ -114,7 +114,10 @@ class SingleCellClassifier:
 
     
     def lognormalizate_adata(self) -> None:
-            
+
+       
+
+        if self.layer is None:
             sc.pp.normalize_total(self.adata_train, target_sum=1e4)  
             sc.pp.log1p(self.adata_train)
 
@@ -124,29 +127,54 @@ class SingleCellClassifier:
             
             sc.pp.normalize_total(self.adata_cal, target_sum=1e4)
             sc.pp.log1p(self.adata_cal)
-            print("Data log-normalized for celltypist.")
+            print("Data log-normalized.")
+        
 
-            return None 
+        else:
+            sc.pp.normalize_total(self.adata_train, target_sum=1e4, layer=self.layer)  
+            sc.pp.log1p(self.adata_train,layer=self.layer)
+
+            if self.do_test:
+                sc.pp.normalize_total(self.adata_test, target_sum=1e4, layer=self.layer)
+                sc.pp.log1p(self.adata_test,layer=self.layer)
+            
+            sc.pp.normalize_total(self.adata_cal, target_sum=1e4, layer=self.layer)
+            sc.pp.log1p(self.adata_cal, layer=self.layer)
+            print("Data log-normalized.")
+
+        
+
+        return None 
 
 
     def load_data(self,
-                    reference_data_path: str,
+                    reference_data_path:  Union[str, ad.AnnData],
                     adata_query,
                     column_to_predict: str,
                     cell_types_excluded_treshold: Union[int, List[str]] = 0,
-                    obsm_layer: Optional[str] = None,
+                    obsm = None,
+                    layer = None,
                     gene_column_name: str = "features") -> None:
 
         self.column_to_predict = column_to_predict
-        self.obsm_layer = obsm_layer
+        self.obsm = obsm
+        self.layer = layer
         self.cell_types_excluded_treshold = cell_types_excluded_treshold
         self.cell_types_excluded:list[str] = []
 
+       
 
         print("Loading reference data...")
         
-        #read single cell reference data model:  
-        adata = sc.read_h5ad(reference_data_path)
+        #read single cell reference data model: 
+        if isinstance(reference_data_path, str):
+            adata = sc.read_h5ad(reference_data_path)
+        elif isinstance(reference_data_path, ad.AnnData):
+            adata = reference_data_path
+        else:
+            raise TypeError("reference_data must be a file path (str) or an AnnData object.")
+
+        
 
         try:
             adata.var_names =  adata.var[gene_column_name]
@@ -161,13 +189,14 @@ class SingleCellClassifier:
         
         print("Reference data loaded.")
 
-
+       
 
         # Extract labels
           
         label_distribution = adata.obs[self.column_to_predict].value_counts()
+        self.label_distribution = label_distribution
         print("\nInitial reference data label distribution:")
-        print(label_distribution)
+        print(label_distribution, len(label_distribution))
 
         try:
             print("\nQuery data label distribution:")
@@ -191,6 +220,8 @@ class SingleCellClassifier:
         print(f"\nExcluding cell types in: {cell_types_excluded_treshold}:")
         print(self.cell_types_excluded)
 
+       
+
         mask = ~adata.obs[self.column_to_predict].isin(self.cell_types_excluded)
         adata = adata[mask].copy()
 
@@ -201,8 +232,7 @@ class SingleCellClassifier:
         
         # Encode labels
         self.unique_labels, self.labels_encoded = np.unique(self.labels, return_inverse=True)
-        
-
+                
 
 
         if self.classifier_model != "celltypist":
@@ -217,16 +247,10 @@ class SingleCellClassifier:
             adata_query = adata_query[:, common_genes]
 
             print(f"Common genes detected: {len(common_genes)}")
-
-
-
-        
-
-        
+       
         
 
         all_idx = np.arange(adata.n_obs)  # 0 … n_obs-1 
-        
         
 
         if self.do_test:
@@ -241,7 +265,7 @@ class SingleCellClassifier:
            
             idx_remain, idx_val = train_test_split(
                 idx_remain,
-                test_size=0.15,
+                test_size=0.10,
                 stratify=self.labels_encoded[idx_remain],
                 random_state=self.random_state
             ) 
@@ -250,7 +274,7 @@ class SingleCellClassifier:
             
             idx_remain, idx_val = train_test_split(
                 all_idx,
-                test_size=0.40,
+                test_size=0.10,
                 stratify=self.labels_encoded,
                 random_state=self.random_state
             )
@@ -259,20 +283,25 @@ class SingleCellClassifier:
         
         idx_train, idx_cal = train_test_split(
             idx_remain,
-            test_size=0.25,
+            test_size=0.45,
             stratify=self.labels_encoded[idx_remain],
             random_state=self.random_state
         )
+        
+
         
         # Subsets
         self.adata_train = adata[idx_train].copy()  
         self.adata_val   = adata[idx_val].copy()
         self.adata_test  = adata[idx_test].copy() if self.do_test else None
-        self.adata_cal   = adata[idx_cal].copy() 
+        self.adata_cal   = adata[idx_cal].copy()
+        
 
         if self.classifier_model == "celltypist":
             self.lognormalizate_adata()
-            
+        
+        
+
         self.labels_train  = torch.from_numpy(self.labels_encoded[idx_train]).long()
         self.labels_val    = torch.from_numpy(self.labels_encoded[idx_val]).long()
         self.labels_test   = torch.from_numpy(self.labels_encoded[idx_test]).long() if self.do_test else None
@@ -288,22 +317,30 @@ class SingleCellClassifier:
 
        
         
-
-        if self.obsm_layer == None:
+        if self.obsm is None and self.layer is None:
             self.data_train = self.adata_train.X.astype(np.float32)
             self.data_val = self.adata_val.X.astype(np.float32)
             if self.do_test:
                 self.data_test = self.adata_test.X.astype(np.float32)
             self.data_cal = self.adata_cal.X.astype(np.float32)
 
-        
-
-        if self.obsm_layer is not None :
-            self.data_train = self.adata_train.obsm[self.obsm_layer].astype(np.float32)
-            self.data_val = self.adata_val.obsm[self.obsm_layer].astype(np.float32)
+        elif self.layer is None and self.obsm is not None:
+            self.data_train = self.adata_train.obsm[self.obsm].astype(np.float32)
+            self.data_val = self.adata_val.obsm[self.obsm].astype(np.float32)
             if self.do_test:
-                self.data_test = self.adata_test.obsm[self.obsm_layer].astype(np.float32)
-            self.data_cal = self.adata_cal.obsm[self.obsm_layer].astype(np.float32)
+                self.data_test = self.adata_test.obsm[self.obsm].astype(np.float32)
+            self.data_cal = self.adata_cal.obsm[self.obsm].astype(np.float32)
+        
+        elif self.obsm is None and self.layer is not None:
+            self.data_train = self.adata_train.layers[self.layer].astype(np.float32)
+            self.data_val = self.adata_val.layers[self.layer].astype(np.float32)
+            if self.do_test:
+                self.data_test = self.adata_test.layers[self.layer].astype(np.float32)
+            self.data_cal = self.adata_cal.layers[self.layer].astype(np.float32)
+
+        else:
+            raise ValueError("Fatal internal error: Please, specify either obsm or layer, not both at the same time.")
+        
 
         
         
@@ -324,7 +361,7 @@ class SingleCellClassifier:
         if not isinstance(self.data_cal, (np.ndarray, torch.Tensor)):
             self.data_cal = self.data_cal.toarray().astype(np.float32)
 
-
+        self.is_outlier = np.array(adata_query.obs[column_to_predict].isin(self.cell_types_excluded))
         print("\nData loaded!")
 
         return adata_query
@@ -333,10 +370,12 @@ class SingleCellClassifier:
 
     def fit_OOD_detector(self, pvalues,  alpha_OOD, delta_OOD,
                         hidden_sizes_OOD, dropout_rates_OOD,
-                        learning_rate_OOD, batch_size_OOD, n_epochs_OOD ) -> None:
+                        learning_rate_OOD, batch_size_OOD, n_epochs_OOD,
+                        obsm_OOD ) -> None:
 
+        self.obsm_OOD = obsm_OOD
 
-        print("\nTraining OOD detector...")
+        print("\nTraining OOD detector with alpha:", alpha_OOD)
 
         self.alpha_OOD = alpha_OOD
         self.delta_OOD = delta_OOD
@@ -347,14 +386,28 @@ class SingleCellClassifier:
             "learning_rate": learning_rate_OOD,
             "batch_size": batch_size_OOD,
             "n_epochs": n_epochs_OOD,
-            "patience":      3}
+            "patience":      9,
+            "noise_level":   0.1,
+            "lambda_sparse": 1e-3}
         
-        
-        model_oc = AEOutlierDetector(input_dim=self.data_train.shape[1], network_architecture=network_architecture_OOD)
+
+        if self.obsm_OOD is not None:
+            self.data_train_OOD = self.adata_train.obsm[self.obsm_OOD].astype(np.float32)
+            self.data_val_OOD = self.adata_val.obsm[self.obsm_OOD].astype(np.float32)
+            self.data_cal_OOD = self.adata_cal.obsm[self.obsm_OOD].astype(np.float32)
+        else:
+            self.data_train_OOD = self.adata_train.X.astype(np.float32)
+            self.data_val_OOD = self.adata_val.X.astype(np.float32)
+            self.data_cal_OOD = self.adata_cal.X.astype(np.float32)
+
+
+        model_oc = AEOutlierDetector(input_dim=self.data_train_OOD.shape[1], network_architecture=network_architecture_OOD)
         
         self.OOD_detector = Annomaly_detector(pvalues, oc_model = model_oc, delta=self.delta_OOD)
 
-        self.OOD_detector.fit(self.data_train, self.data_cal )
+        self.OOD_detector.fit(self.data_train_OOD, self.data_val_OOD, self.data_cal_OOD )
+
+        
 
         print("OOD detector trained!")
         
@@ -390,9 +443,21 @@ class SingleCellClassifier:
         # Create PyTorch datasets
         self.train_dataset = CustomDataset(self.data_train, self.labels_train)
         self.val_dataset = CustomDataset(self.data_val, self.labels_val)
+
+
+        # Compute sample weights for WeightedRandomSampler
+        labels_np = self.labels_train.numpy()
+        class_counts = np.bincount(self.labels_train.numpy())
+        inv_class_counts = 1.0 / class_counts
+        sample_weights = inv_class_counts[self.labels_train.numpy()]  # one weight per training sample
+        sampler = WeightedRandomSampler(
+            weights=torch.tensor(sample_weights, dtype=torch.double),
+            num_samples=len(sample_weights),
+            replacement=True
+        )
         
         # Create PyTorch data loaders
-        self.train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True )
+        self.train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, sampler=sampler, drop_last=True )
         self.val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, drop_last=True )
         
         # Move model to the appropriate device (CPU or GPU)
@@ -415,7 +480,7 @@ class SingleCellClassifier:
         # Variables for early stopping
         best_val_loss = float('inf')
         epochs_no_improve = 0
-        early_stopping_patience = 5
+        early_stopping_patience = 6
 
         
 
@@ -467,6 +532,7 @@ class SingleCellClassifier:
                 self._is_fitted = True
                 break
            
+
         # Save model
         if save_path is not None:
             torch.save(self.model, save_path)
@@ -488,10 +554,11 @@ class SingleCellClassifier:
         self.model.train()
 
 
-        self.model.train_model(self.adata_train, label_key=column_to_predict)
+        self.model.train_model(self.adata_train, label_key=column_to_predict, layer = self.layer)
 
         return None
     
+
 
     def fit_scmap(self, column_to_predict) -> None:
         
@@ -504,7 +571,7 @@ class SingleCellClassifier:
         self.model.train()
 
 
-        self.model.train_model(self.adata_train, label_key=column_to_predict)
+        self.model.train_model(self.adata_train, label_key=column_to_predict, layer = self.layer, obsm = self.obsm)
 
         return None
 
@@ -553,7 +620,7 @@ class SingleCellClassifier:
 
             elif predictors == "cluster":
                 print("Using cluster taxonomy")
-                conformal_predictor =  ClusteredPredictor(score_function, self.model)
+                conformal_predictor =  ClusteredPredictor(score_function, self.model, num_clusters=int(len(self.label_distribution)/2))
 
             elif predictors == "standard":    
                 print("Using standard taxonomy")                       
@@ -564,6 +631,7 @@ class SingleCellClassifier:
 
             conformal_predictor.calibrate(self.cal_loader, alpha)
             self.conformal_predictors[alpha] = conformal_predictor
+
 
         print("Model calibrated.")
 
@@ -782,36 +850,52 @@ class SingleCellClassifier:
         return None
 
         
-    def predict(self, data) -> None:
+    def predict(self, data, data_OOD) -> None:
+
+        if not isinstance(data, (np.ndarray, torch.Tensor)):
+            data = data.toarray().astype(np.float32)
+        
+
+        if data_OOD is None:
+            data_OOD = data.copy()  # If no OOD data is provided, use the same data for OOD detection
+        else:
+            if not isinstance(data_OOD, (np.ndarray, torch.Tensor)):
+                data_OOD = data_OOD.toarray().astype(np.float32)
+
+
+        if self.obsm_OOD is not None:
+            arr = self.adata_test.obsm[self.obsm_OOD]
+            if isinstance(arr, torch.Tensor):
+                # detach() and move to CPU before converting to NumPy
+                data_test_X_ID = arr.detach().cpu().numpy().astype(np.float32)
+            else:
+                # already a NumPy array
+                data_test_X_ID = arr.astype(np.float32)
+        else:
+            data_test_X_ID = self.adata_test.X.astype(np.float32)
+
 
         self.prediction_sets:dict = {}
         self.predicted_labels = None
 
 
         print("\nPerforming OOD detection...")
-
-        self.OOD_detector.predict_pvalues(data)
+        
+        self.OOD_detector.predict_pvalues(data_OOD,  X_ID=data_test_X_ID)
         if self.OOD_detector.pvalues == "conditional":
 
-            data_OOD_mask = self.OOD_detector.evaluate_conditional_pvalues(alpha=self.alpha_OOD, lambda_par=0.15, use_sbh=True)
+            data_OOD_mask, self.accuracy_OOD, self.precision_OOD, self.recall_OOD, self.auroc_OOD = self.OOD_detector.evaluate_conditional_pvalues(alpha=self.alpha_OOD, lambda_par=0.15, use_sbh=True, is_outlier = self.is_outlier)
         else:
             
-            data_OOD_mask = self.OOD_detector.evaluate_marginal_pvalues(alpha=self.alpha_OOD, lambda_par=0.15, use_sbh=True)
+            data_OOD_mask, self.accuracy_OOD, self.precision_OOD, self.recall_OOD, self.auroc_OOD = self.OOD_detector.evaluate_marginal_pvalues(alpha=self.alpha_OOD, lambda_par=0.15, use_sbh=True, is_outlier = self.is_outlier)
         
-
+        self.alpha_OOD = self.OOD_detector.alpha_OOD
   
         
         print(f"OOD samples detected: {data_OOD_mask.sum()}")
 
-        
+         
         ## CLASSICAL PREDICTION
-            
-        # If the data is sparse, convert it to dense format
-        if not isinstance(data, (np.ndarray, torch.Tensor)):
-            data = data.toarray().astype(np.float32)
-
-        
-        #data = data[:, self.common_genes_available_indices]
 
         data = torch.from_numpy(data).float()
 
