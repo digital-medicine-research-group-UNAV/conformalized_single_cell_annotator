@@ -13,36 +13,22 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 
 ## Setup and Installation
 
-To ensure full reproducibility, we provide a Conda environment file (`environment.yml`) that specifies all required dependencies ( [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)). You can use either Mamba or Conda to create the environment.
-
-**We strongly recommend using Mamba**, as it is significantly faster and more efficient at resolving dependencies.
+We provide a Conda ([conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)) environment file (`environment.yml`) that specifies all required dependencies. You can use either Mamba or Conda to create the environment (**We strongly recommend using Mamba**).
 
 
-### Option 1: Using Mamba (Recommended)
-
-1.  **Install Mamba:**
-    If you don't have Mamba installed, you can add it to your base Conda environment with a single command:
+1.  **Clone the repository:**
     ```bash
-    conda install -n base -c conda-forge mamba
+    git clone https://github.com/digital-medicine-research-group-UNAV/conformalized_single_cell_annotator.git
+    cd conformalized_single_cell_annotator
     ```
 
-2.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/your-repository.git
-    cd your-repository
-    ```
-
-3.  **Create the environment with Mamba:**
-    This command uses the `environment.yml` file to create a new environment named `annotator-env`.
+2.  **Create the environment**
+    (This command uses the `environment.yml` file to create a new environment named `annotator-env`):
     ```bash
     mamba env create -f environment.yml
     ```
+    or
 
-### Option 2: Using Conda
-
-If you prefer not to use Mamba, you can use the standard Conda command. Please note this may be considerably slower.
-
-  **Create the environment with Conda:**
     ```bash
     conda env create -f environment.yml
     ```
