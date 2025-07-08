@@ -6,37 +6,16 @@
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import random
-import copy
-import sys
-
-
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-
-from sklearn.model_selection import train_test_split
-from sklearn import svm
-from sklearn.ensemble import IsolationForest
-from sklearn.neighbors import LocalOutlierFactor
-from statsmodels.stats.multitest import multipletests
-from scipy import stats
 from scipy.stats import  ks_2samp
 
 from utils_calib import betainv_mc, betainv_simes, find_slope_EB, estimate_fs_correction, betainv_asymptotic
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import Adam
-from torch.utils.data import DataLoader, TensorDataset
-from torch.utils.data import random_split, DataLoader, TensorDataset
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch.utils.data import random_split
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader, TensorDataset, random_split

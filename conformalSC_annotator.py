@@ -12,7 +12,7 @@ import scanpy as sc
 import scanpy.external as sce
 import anndata as ad
 
-from conformalized_single_cell_annotator.conformalSC import SingleCellClassifier
+from conformalSC import SingleCellClassifier
 from torchcp.classification.score import THR, RAPS, APS
 import os
 cwd = os.getcwd()

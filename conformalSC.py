@@ -13,28 +13,19 @@ import pandas as pd
 import numpy as np
 import anndata as ad
 import scanpy as sc
-import torch
-import torch.nn as nn
-import torch.optim as optim
 from sklearn.utils.class_weight import compute_class_weight
-import scanpy.external as sce
-
-from conformalized_single_cell_annotator.utils import CellTypistWrapper, ScmapWrapper
 
 
+from utils import CellTypistWrapper, ScmapWrapper
 from typing import Union, List, Optional
 
-
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from itertools import chain
-
-from torch.utils.data import TensorDataset, DataLoader
 
 from torchcp.classification.predictor import SplitPredictor, ClassWisePredictor, ClusteredPredictor
 from torchcp.classification.utils.metrics import Metrics
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from conformalized_single_cell_annotator.annomaly_detector import Annomaly_detector, AEOutlierDetector
+from annomaly_detector import Annomaly_detector, AEOutlierDetector
 
 import os
 cwd = os.getcwd()
