@@ -59,7 +59,7 @@ import pandas as pd
 import scanpy as sc
 
 # Import the ConformalSCAnnotator class 
-from conformal_sc_annotator import ConformalSCAnnotator
+from conformalSC_annotator import  ConformalSCAnnotator
 
 # 1. Load reference and query datasets (must be in .h5ad format)
 reference_adata_path = 'path_to_query/your_reference.h5ad'
@@ -124,11 +124,12 @@ from torchcp.classification.score import  APS
 
 do_test = True          # If True, a small fraction of the reference set is reserved as an independent test set.
 
-taxonomy = "standard"   # Choose from: "standard", "mondrian", or "cluster"
-cells_OOD = 50          # Exclude cell types with fewer than 50 cells (Optional, it could be an int or a list of cell types)
-nc_function = APS()     # Non-conformity function compatible with torchCP
+taxonomy = "standard"       # Choose from: "standard", "mondrian", or "cluster"
+cells_OOD = 50              # Exclude cell types with fewer than 50 cells (Optional, it could be an int or a list of cell types)
+nc_function = APS()         # Non-conformity function compatible with torchCP
+ref_column = "cell_type"    # Column name in the reference data with class labels (e.g., "cell_type", "cell_class", etc.)
 
-annotator.configure(reference_path = adata_ref,                  # Path or AnnData object (.h5ad) for the reference dataset
+annotator.configure(reference_path = adata_reference,                  # Path or AnnData object (.h5ad) for the reference dataset
                     model_architecture = network_architecture,   # Optional: user-defined model; otherwise defaults are used
                     OOD_detector = OOD_detector_config,          # Optional: specify custom OOD detector config
                     CP_predictor = taxonomy,                     

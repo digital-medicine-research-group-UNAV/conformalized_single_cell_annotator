@@ -472,7 +472,7 @@ class SingleCellClassifier:
         self.criterion = nn.CrossEntropyLoss(weight=class_weights)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
-        scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+        scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=3)
 
         num_epochs = self.epoch  # Assuming self.epoch is defined
 
@@ -992,7 +992,7 @@ class SingleCellClassifier:
 
                     else:
                         full_mapped_predictions[i] = mapped_predictions_filtered[non_ood_counter]
-                        prediction_scores[i, :] = prediction_scores_tensor[non_ood_counter]
+                        prediction_scores[i, :] = prediction_scores_tensor[non_ood_counter].cpu()
                         non_ood_counter += 1
 
                 self.prediction_sets[key] = full_mapped_predictions

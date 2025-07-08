@@ -76,6 +76,7 @@ class AEOutlierDetector(nn.Module):
 
         # Device
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        print(f"Using device: {self.device}")
 
         # Input normalization
         self.input_norm = nn.LayerNorm(input_dim)
