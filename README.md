@@ -5,6 +5,8 @@ We provide a single-cell annotator based on conformal prediction for robust unce
 
 Conformal prediction provides reliable and rigorous uncertainty estimates [1]. Our Conformalized Single Cell Annotator library lets you annotate your single-cell data at various significance levels, ensuring precise and informative cell-type assignments even in noisy or complex datasets. This tool is designed to be fitted with your reference, and is also robust to out-of-distribution samples.
 
+Further details are given in our paper: **Currently under review**.
+
 
 ---
 
@@ -13,7 +15,7 @@ Conformal prediction provides reliable and rigorous uncertainty estimates [1]. O
 
 ## Setup and Installation
 
-We provide a Conda ([conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)) environment file (`environment.yml`) that specifies all required dependencies. You can use either Mamba or Conda to create the environment (**We strongly recommend using Mamba**).
+We provide a Conda ([conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)) environment file (`environment.yml`) that specifies minimum required dependencies. You can use either Mamba or Conda to create the environment (**We strongly recommend using Mamba**).
 
 
 1.  **Clone the repository:**
