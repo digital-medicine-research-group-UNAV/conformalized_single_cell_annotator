@@ -3,9 +3,9 @@
 
 We provide a single-cell annotator based on conformal prediction for robust uncertainty quantification on annotations.
 
-Conformal prediction provides reliable and rigorous uncertainty estimates [1]. Our Conformalized Single Cell Annotator library lets you annotate your single-cell data at various significance levels, ensuring precise and informative cell-type assignments even in noisy or complex datasets. This tool is designed to be fitted with your reference, and is also robust to out-of-distribution samples.
+Conformal prediction provides reliable and rigorous uncertainty estimates [1]. Our methodology lets you annotate your single-cell data at various significance levels, ensuring precise and informative cell-type assignments even in noisy or complex datasets. This tool is designed to be fitted with your reference, and is also robust to out-of-distribution samples.
 
-Further details are given in our paper: **Currently under review**.
+Further details are provided in our paper: **Currently under review**.
 
 
 ---
