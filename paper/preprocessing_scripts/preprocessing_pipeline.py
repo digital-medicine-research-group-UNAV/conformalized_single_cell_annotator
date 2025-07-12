@@ -25,10 +25,10 @@ import scrublet.helper_functions as hf
 
 ###### READ YOUR DATA (adapt this step for your dataset) ######
 
-adata_ref_path = "your_data_path.h5ad"  # Replace with your actual data path
+adata_ref_path = "your_ref_data_path.h5ad"  # Replace with your actual data path
 adata_ref = ad.read_h5ad(adata_ref_path)
 
-adata_query_path = "your_ref_data_path.h5ad"  # Replace with your actual reference data path
+adata_query_path = "your_query_data_path.h5ad"  # Replace with your actual reference data path
 adata_query = ad.read_h5ad(adata_ref_path)
 
 
