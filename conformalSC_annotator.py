@@ -189,7 +189,7 @@ class ConformalSCAnnotator:
                     reference_path: Union[str, ad.AnnData] = None,
                     model_architecture: Optional[dict] = None,
                     OOD_detector: Optional[dict] = None,
-                    CP_predictor="mondrian",
+                    CP_predictor="standard",
                     cell_names_column=None,
                     cell_types_excluded_treshold = 45,
                     test=False,
@@ -206,9 +206,6 @@ class ConformalSCAnnotator:
         Configure the annotator with model-specific settings and conformal prediction parameters.
 
         Parameters:
-        model : str
-            Name of the model to load. Supported: 'HumanLung_5K_HVG', 'HumanLung_1K_HVG'.
-        CP_predictor : str, default="mondrian"
             Type of conformal predictor to use.
         cell_names_column : str, default="None"
             Name with the cell type in the reference.
@@ -475,6 +472,7 @@ class ConformalSCAnnotator:
         self.unique_labels = classifier.unique_labels
         self.adata_query.labels_encoded = classifier.labels_encoded
         self.alpha_OOD = classifier.alpha_OOD
+        self.pvalues_query = classifier.p_values
         
         
         # Update observation metadata with predictions

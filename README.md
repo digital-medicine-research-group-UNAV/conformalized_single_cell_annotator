@@ -112,7 +112,7 @@ from torchcp.classification.score import  APS
 
 do_test = True          # If True, a small fraction of the reference set is reserved as an independent test set.
 
-taxonomy = "standard"       # Choose from: "standard", "mondrian", or "cluster"
+taxonomy = "standard"       # Choose from: "standard", "classwise", or "cluster"
 cells_OOD = 50              # Exclude cell types with fewer than 50 cells (Optional, it could be an int or a list of cell types)
 nc_function = APS()         # Non-conformity function compatible with torchCP
 ref_column = "cell_type"    # Column name in the reference data with class labels (e.g., "cell_type", "cell_class", etc.)
@@ -166,6 +166,10 @@ unique_labels = annotator.unique_labels
 
 # Automatically determined alpha (if alpha=None in OOD_detector_config)
 alpha_OOD = annotator.alpha_OOD
+
+# Get the p-values 
+pvalues_query = annotator.pvalues_query
+
 
 ```
 Finally, you can extract the predicted labels and corresponding conformal prediction sets into a traditional pandas DataFrame for inspection, export, or downstream analysis.

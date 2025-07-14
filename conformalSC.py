@@ -572,6 +572,8 @@ class SingleCellClassifier:
 
         print("Calibrating the model...")
 
+        self.predictors = predictors
+
         self.data_cal = torch.from_numpy(self.data_cal).float()
         #self.labels_cal = torch.from_numpy(self.labels_cal).long()  
 
@@ -605,20 +607,20 @@ class SingleCellClassifier:
 
             score_function = non_conformity_function
             
-            if predictors  == "mondrian":
-                print("Using mondrian taxonomy")
+            if self.predictors  == "classwise":
+                print("Using classwise taxonomy")
                 conformal_predictor =  ClassWisePredictor(score_function, self.model)
 
-            elif predictors == "cluster":
+            elif self.predictors == "cluster":
                 print("Using cluster taxonomy")
                 conformal_predictor =  ClusteredPredictor(score_function, self.model, num_clusters=int(len(self.label_distribution)/2))
 
-            elif predictors == "standard":    
+            elif self.predictors == "standard":    
                 print("Using standard taxonomy")                       
                 conformal_predictor = SplitPredictor(score_function, self.model)
             
             else:
-                raise ValueError("Invalid conformal predictor. Choose from 'mondrian', 'cluster', or 'standard")
+                raise ValueError("Invalid conformal predictor. Choose from 'classwise', 'cluster', or 'standard")
 
             conformal_predictor.calibrate(self.cal_loader, alpha)
             self.conformal_predictors[alpha] = conformal_predictor
@@ -751,92 +753,6 @@ class SingleCellClassifier:
                 print(f"\nConformal predictor {key} - Coverage Rate: {result['coverage_rate']}, CovGap: {result['CovGap']}, Average Size: {result['average_size']}")
                 print(f"Size Distribution: {size_distribution}")
         
-    
-
-        ## OUT OF DISTRIBUTION PREDICTION
-
-        """ 
-        # ELIMINAR 
-        if len(self.cell_types_excluded) > 0:
-
-            self.OOD_data_test = torch.from_numpy(self.OOD_data).float()
-            placeholder_labels = torch.from_numpy(np.full(len(self.OOD_data), -1)).float()
-
-            self.OOD_test_dataset = CustomDataset(self.OOD_data_test, placeholder_labels)
-
-            self.OOD_test_loader = DataLoader(self.OOD_test_dataset, batch_size=self.batch_size, shuffle=False)
-
-            unknown_predicted_labels_list: list = []
-
-
-            print("\nPerforming out-of-distribution prediction...")
-
-            with torch.no_grad():
-                for OOD_test_features, OOD_test_labels in self.OOD_test_loader:
-
-                    OOD_test_features = OOD_test_features.to(self.device)
-                    OOD_test_labels = OOD_test_labels.to(self.device)
-
-                    # Make predictions
-                    unknown_test_outputs = self.model(OOD_test_features)
-                    _, unknown_predicted = torch.max(unknown_test_outputs, 1)  # Get predicted class indices
-            
-                
-                    unknown_predicted_labels_list.append(unknown_predicted) 
-
-            self.unknown_predicted_labels_ = torch.cat(unknown_predicted_labels_list).cpu().numpy()
-            
-            
-            print(f"Classical Predicted labels: {self.unknown_predicted_labels_}")
-
-            
-            if self.conformal_prediction:
-                
-                print("\nPerforming conformal prediction...")
-                
-                
-                # Evaluate with conformal predictor
-                self.OOD_prediction_sets_ = {}
-                self.OOD_results_ = {}
-                for key in self.conformal_predictors:
-
-                    prediction_sets = []
-                    labels_list = []
-                    with torch.no_grad():
-                        for examples in self.OOD_test_loader:
-                            tmp_x, tmp_label = examples[0].to(self.device), examples[1].to(self.device)
-                            prediction_sets_batch = self.conformal_predictors[key].predict(tmp_x)
-                            prediction_sets.extend(prediction_sets_batch)
-                            labels_list.append(tmp_label)
-                            
-                    val_labels = torch.cat(labels_list)
-                    
-                    prediction_sets_tensor = torch.stack(prediction_sets).float().to(self.device)
-                    
-                    # Similar to .evalueate() method in the original code but refined 
-                    result = {"coverage_rate": self._metric('coverage_rate')(prediction_sets_tensor, val_labels.long()),
-                            "average_size": self._metric('average_size')(prediction_sets_tensor, val_labels.long()),
-                            "prediction_set": prediction_sets,
-                            "targets": val_labels.tolist()}
-
-                    prediction_set_sizes = [(pred_set == 1).sum().item() for pred_set in result['prediction_set']]
-                    size_distribution = {size: prediction_set_sizes.count(size) for size in set(prediction_set_sizes)}
-
-                    self.OOD_results_[key] = {'Coverage_rate': result['coverage_rate'],
-                                             'Average_size': result['average_size'], 
-                                             'Size_distribution': size_distribution}
-                    
-                    self.OOD_prediction_sets_[key] = [[set,target] for set,target in zip(result['prediction_set'],result['targets']) ]
-                    
-                    mapped_predictions = [
-                                [str(self.unique_labels[idx.item()]) for idx in tensor.cpu().nonzero(as_tuple=True)[0]]
-                                    for tensor in result['prediction_set'] ]
-                    
-                    print("\nConformal predictor" ,key, "\nResults per OOD sample: ",  mapped_predictions)
-                    print(f"Size Distribution: {size_distribution}")
-
-            return None
-        """
         
         return None
 
@@ -994,6 +910,81 @@ class SingleCellClassifier:
    
 
         return None
+    
+
+    def compute_p_values(self, data_cp) -> None:
+
+        """
+        TorchCP dont have a method to compute p-values for the test samples, so we implement it here.
+        This method computes p-values for the test samples based on the calibration scores and the non-conformity scores.
+        """
+        
+        key = list(self.conformal_predictors.keys())[0]  # Use the first predictor's settings
+        predictor = self.conformal_predictors[key]
+
+        num_classes = len(self.unique_labels)
+        cal_scores_list = []
+        cal_labels_list = []
+
+        with torch.no_grad():
+            for examples in self.cal_loader:
+                tmp_x, tmp_label = examples[0].to(self.device), examples[1].to(self.device)
+                
+                x_batch = predictor._model(tmp_x.to(predictor._device)).float()
+                x_batch = predictor._logits_transformation(x_batch).detach() # these are the logits
+                scores_batch = predictor.score_function(x_batch, tmp_label).to(predictor._device)
+
+                
+                cal_scores_list.append(scores_batch)
+                cal_labels_list.append(tmp_label)
+
+        # Concatenate results from all calibration batches
+        calibration_scores = torch.cat(cal_scores_list, dim=0) #These are the non-conformity scores for calibration samples
+        calibration_labels = torch.cat(cal_labels_list, dim=0).long()
+
+        # now is the turn to compute p-values for the test samples for each possible label
+        all_p_values = []
+        with torch.no_grad():
+            for examples in data_cp:
+                tmp_x, _ = examples[0].to(self.device), examples[1].to(self.device)
+                batch_size = tmp_x.shape[0]
+                logits_batch = predictor._model(tmp_x.to(predictor._device)).float()
+                logits_batch = predictor._logits_transformation(logits_batch).detach()
+
+                p_values_batch = torch.zeros(batch_size, len(self.unique_labels), device=self.device)
+
+                for c in range(num_classes):
+                    # Create hypothetical labels for the current class 'c'
+                    hypothetical_labels = torch.full((batch_size,), fill_value=c, dtype=torch.long, device=self.device)
+                    
+                    # Calculate test scores assuming the samples belong to class 'c'
+                    test_scores_for_c = predictor.score_function(logits_batch, hypothetical_labels)
+                    
+                    # If classwise Get the true calibration scores that actually belong to class 'c'
+                    if self.predictors == 'classwise':
+                        reference_scores = calibration_scores[calibration_labels == c]
+                    else: 
+                        reference_scores = calibration_scores # Here for standard and cluster taxonomies
+
+                    # Compare test scores with calibration scores to get p-values
+                    if len(reference_scores) == 0:
+                        p_values_batch[:, c] = 0.0
+                        continue
+
+                    comparison = reference_scores.unsqueeze(0) >= test_scores_for_c.unsqueeze(1)
+                    p_values_batch[:, c] = (torch.sum(comparison, dim=1) + 1) / (len(reference_scores) + 1)
+
+                all_p_values.append(p_values_batch)
+
+
+
+        if all_p_values:
+            p_values_tensor = torch.cat(all_p_values, dim=0)
+            p_values = p_values_tensor.cpu().numpy()
+        else:
+            p_values = np.array([])
+        
+        return p_values   
         
     
 
