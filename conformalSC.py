@@ -906,6 +906,17 @@ class SingleCellClassifier:
             
             self.prediction_scores = prediction_scores
 
+            print("\nComputing pvalues.")
+            pvalues = self.compute_p_values(data_cp)
+
+            pvalues_full = np.full((len(data_OOD_mask), len(self.unique_labels)), np.nan)
+            non_ood_indices = ~np.array(data_OOD_mask)
+
+            pvalues_full[non_ood_indices] = pvalues
+
+           
+            self.p_values = pvalues_full
+
         print("\nPerforming conformal prediction: Done\n")
    
 
