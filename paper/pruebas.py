@@ -106,7 +106,7 @@ def overall_success_rate(df: pd.DataFrame, alpha: str) -> float:
 
 ### define the parameters for the experiments
 n_seeds = 20
-taxonomies =  ["standard", "mondrian", "cluster"]
+taxonomies =  ["standard", "classwise", "cluster"]
 nc_functions =  [APS(), RAPS(penalty=0.01, kreg=1), THR()]
 
 
@@ -138,7 +138,7 @@ for idx, query_dataset in enumerate([n_queries]):
                                         "dropout_rates": [0.15, 0.15, 0.15, 0.15], 
                                         "learning_rate": 1e-4,
                                         "batch_size":    72,
-                                        "n_epochs":      850,
+                                        "n_epochs":      1000,
                                         "patience":      9,
                                         "noise_level":   0.1,
                                         "lambda_sparse": 1e-3} 
@@ -153,7 +153,7 @@ for idx, query_dataset in enumerate([n_queries]):
                                     test =  do_test,                                # Perform internal test of the model
                                     alpha = [0.01, 0.05, 0.1],                   # Confidence of the predictions
                                     non_conformity_function = nc_function,             # NC-function provided by or compatible with torchCP    
-                                    epoch=890,
+                                    epoch=1000,
                                     batch_size = 72,
                                     random_state = seed)  
                     
