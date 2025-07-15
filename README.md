@@ -161,13 +161,14 @@ print("\nPredicted annotations sets: \n" , annotated_cells)
 # Internal test results (if do_test = True):
 test_results = annotator.test_results
 
-# Unique labels from the reference data
-unique_labels = annotator.unique_labels
 
 # Automatically determined alpha (if alpha=None in OOD_detector_config)
 alpha_OOD = annotator.alpha_OOD
 
-# Get the p-values 
+# Unique labels from the reference data
+unique_labels = annotator.unique_labels
+
+# Get the p-values for each possible label (same position as in unique_labels )
 pvalues_query = annotator.pvalues_query
 
 
